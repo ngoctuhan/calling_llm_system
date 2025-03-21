@@ -1,0 +1,27 @@
+# Core dependencies
+neo4j==5.14.1
+openai>=1.13.0
+google-generativeai>=0.3.1
+sentence-transformers>=2.2.2
+numpy>=1.23.0
+aiohttp>=3.8.6
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# Neo4j specific dependencies 
+neo4j-async>=0.1.0
+
+# For vector similarities and processing
+faiss-cpu>=1.7.4
+scipy>=1.10.0
+
+# For text processing
+nltk>=3.8.1
+tiktoken>=0.5.2
+
+# Qdrant dependencies for vector_rag compatibility
+qdrant-client>=1.7.0
+
+# Utilities
+tqdm>=4.66.0
+tenacity>=8.2.3 

@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package tools;
+
+// Text processing service for OCR and text extraction
+service TextProcessingService {
+  // Extract text from an image (OCR)
+  rpc ExtractText (TextExtractionRequest) returns (TextExtractionResponse);
+  
+  // Convert PDF to text
+  rpc ConvertPDFToText (PDFConversionRequest) returns (PDFConversionResponse);
+}
+
+// Data transformation service
+service DataTransformationService {
+  // Convert data between formats (e.g., JSON to CSV)
+  rpc ConvertData (DataConversionRequest) returns (DataConversionResponse);
+  
+  // Execute a Python script for data processing
+  rpc ExecutePythonScript (PythonScriptRequest) returns (PythonScriptResponse);
+}
+
+// Request message for text extraction
+message TextExtractionRequest {
+  bytes image_data = 1;
+  string image_format = 2; // "png", "jpeg", etc.
+  bool enhance_image = 3;
+}
+
+// Response message for text extraction
+message TextExtractionResponse {
+  string extracted_text = 1;
+  bool success = 2;
+  string error_message = 3;
+  float confidence_score = 4;
+}
+
+// Request message for PDF conversion
+message PDFConversionRequest {
+  bytes pdf_data = 1;
+  int32 start_page = 2;
+  int32 end_page = 3;
+  bool extract_tables = 4;
+}
+
+// Response message for PDF conversion
+message PDFConversionResponse {
+  string extracted_text = 1;
+  bool success = 2;
+  string error_message = 3;
+  repeated string table_data = 4;
+}
+
+// Request message for data conversion
+message DataConversionRequest {
+  string input_data = 1;
+  string input_format = 2; // "json", "csv", "xml", etc.
+  string output_format = 3; // "json", "csv", "xml", etc.
+  map<string, string> conversion_options = 4;
+}
+
+// Response message for data conversion
+message DataConversionResponse {
+  string converted_data = 1;
+  bool success = 2;
+  string error_message = 3;
+}
+
+// Request message for Python script execution
+message PythonScriptRequest {
+  string script_content = 1;
+  string input_data = 2;
+  map<string, string> parameters = 3;
+}
+
+// Response message for Python script execution
+message PythonScriptResponse {
+  string output_data = 1;
+  bool success = 2;
+  string error_message = 3;
+  float execution_time = 4;
+} 
