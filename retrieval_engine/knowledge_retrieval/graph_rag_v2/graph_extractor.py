@@ -50,10 +50,34 @@ class KnowledgeTriplet:
         self.predicate = predicate
         self.object = object
         self.metadata = metadata or {}
+        
+        # Extract common metadata fields for easier access
+        self.triplet_id = self.metadata.get('triplet_id', str(uuid.uuid4()))
+        self.confidence = self.metadata.get('confidence', 1.0)
+        self.document_id = self.metadata.get('document_id')
+        self.chunk_id = self.metadata.get('chunk_id')
+        self.page_number = self.metadata.get('page_number')
+        self.source = self.metadata.get('source')
+        self.file_path = self.metadata.get('file_path')
     
     def __repr__(self):
         return f"({self.subject}) --[{self.predicate}]--> ({self.object})"
     
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert triplet to dictionary"""
+        return {
+            "subject": self.subject,
+            "predicate": self.predicate,
+            "object": self.object,
+            "triplet_id": self.triplet_id,
+            "confidence": self.confidence,
+            "document_id": self.document_id,
+            "chunk_id": self.chunk_id,
+            "page_number": self.page_number,
+            "source": self.source,
+            "file_path": self.file_path,
+            "metadata": self.metadata
+        }
 
 class GraphExtractor:
     """Graph extractor for knowledge graph creation"""
@@ -225,9 +249,32 @@ class GraphExtractor:
         self,
         texts: List[str],
         metadata_list: List[Dict[str, Any]]
-    ) -> List[KnowledgeTriplet]:
-        """Extract triplets from a batch of texts"""
-        all_triplets = []
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract triplets from a batch of texts
+        
+        Example usage with Neo4jConnection:
+        ```python
+        # Extract triplets from multiple texts
+        extractor = GraphExtractor(llm_provider)
+        texts = ["Albert Einstein was a German physicist.", "Marie Curie was a Polish physicist."]
+        metadata_list = [
+            {"document_id": "doc1", "source": "Wikipedia", "file_path": "/path/to/einstein.txt"},
+            {"document_id": "doc2", "source": "Encyclopedia", "file_path": "/path/to/curie.txt"}
+        ]
+        
+        # Extract triplets 
+        results = await extractor.extract_triplets(texts, metadata_list)
+        
+        # Save to Neo4j
+        neo4j_conn = Neo4jConnection()
+        await neo4j_conn.connect()
+        await neo4j_conn.setup_database()
+        await neo4j_conn.add_extraction_results(results)
+        ```
+        """
+        all_results = []
+        total_triplets = 0
         
         # Process texts in batches for better performance
         for i in range(0, len(texts), self.batch_size):
@@ -248,10 +295,17 @@ class GraphExtractor:
             ]
             batch_results = await asyncio.gather(*extraction_tasks)
             
-            # Flatten results
-            for triplet_list in batch_results:
-                all_triplets.extend(triplet_list)
-                
-            logger.info(f"Processed batch of {len(batch_texts)} texts, extracted {len(all_triplets)} triplets so far")
+            # Create result objects for this batch
+            for idx, triplets in enumerate(batch_results):
+                batch_idx = i + idx
+                result = {
+                    "text": texts[batch_idx],
+                    "metadata": metadata_list[batch_idx],
+                    "triplets": triplets
+                }
+                all_results.append(result)
+                total_triplets += len(triplets)
+            
+            logger.info(f"Processed batch of {len(batch_texts)} texts, extracted {total_triplets} triplets so far")
         
-        return all_triplets
+        return all_results

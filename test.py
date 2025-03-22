@@ -37,10 +37,14 @@ llm = LLMProviderFactory.create_provider(
 
 graph_extractor = GraphExtractor(llm=llm)
 
-chunk = """
+chunk1 = """
 Nguyễn Trãi (chữ Hán: 阮廌; 1380 – 19 tháng 9 năm 1442), hiệu là Ức Trai (抑齋), là một nhà chính trị, nhà văn, nhà văn hóa lớn của dân tộc Việt Nam. 
 Ông đã tham gia tích cực cuộc Khởi nghĩa Lam Sơn do Lê Lợi lãnh đạo chống lại sự xâm lược của nhà Minh (Trung Quốc) với Đại Việt. 
 Khi cuộc khởi nghĩa thành công vào năm 1428, Nguyễn Trãi trở thành một trong những khai quốc công thần của triều đại quân chủ nhà Hậu Lê trong Lịch sử Việt Nam.[2]
+"""
+
+chunk2 = """
+Hoàng Mậu TRung sinh năm 1998 năm nay 27 tuổi học tại PTIT
 """
 
 metaclass={
@@ -57,5 +61,5 @@ metaclass={
 
 import asyncio
 
-triplets = asyncio.run(graph_extractor.extract_triplets(chunk, metaclass))
+triplets = asyncio.run(graph_extractor.extract_triplets([chunk1, chunk2], [metaclass, metaclass]))
 print(triplets)

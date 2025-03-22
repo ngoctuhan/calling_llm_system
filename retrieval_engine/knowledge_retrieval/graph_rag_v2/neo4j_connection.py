@@ -43,6 +43,7 @@ class Neo4jConnection:
             connection_acquisition_timeout: Timeout for acquiring a connection from the pool
             max_transaction_retry_time: Maximum time to retry failed transactions
         """
+        
         self.uri = uri or os.environ.get("NEO4J_URI", "neo4j://localhost:7687")
         self.username = username or os.environ.get("NEO4J_USERNAME", "neo4j")
         self.password = password or os.environ.get("NEO4J_PASSWORD", "password")
@@ -252,9 +253,19 @@ class Neo4jConnection:
             relation_params = []
             relation_doc_params = []
             relation_chunk_params = []
+            relation_source_params = []
+            relation_file_path_params = []
             
             # Collect all entities and relationships
             for triplet in batch:
+                # Get metadata values
+                triplet_id = triplet.triplet_id
+                document_id = triplet.document_id
+                chunk_id = triplet.chunk_id
+                confidence = triplet.confidence
+                source = triplet.source if hasattr(triplet, 'source') else None
+                file_path = triplet.file_path if hasattr(triplet, 'file_path') else None
+                
                 # Subject entity parameters
                 entity_params.append({
                     "name": triplet.subject,
@@ -272,22 +283,36 @@ class Neo4jConnection:
                     "subject": triplet.subject,
                     "predicate": triplet.predicate,
                     "object": triplet.object,
-                    "triplet_id": triplet.triplet_id,
-                    "confidence": triplet.confidence
+                    "triplet_id": triplet_id,
+                    "confidence": confidence
                 })
                 
                 # Relationship to document
-                if triplet.document_id:
+                if document_id:
                     relation_doc_params.append({
-                        "triplet_id": triplet.triplet_id,
-                        "document_id": triplet.document_id
+                        "triplet_id": triplet_id,
+                        "document_id": document_id
                     })
                 
                 # Relationship to chunk
-                if triplet.chunk_id:
+                if chunk_id:
                     relation_chunk_params.append({
-                        "triplet_id": triplet.triplet_id,
-                        "chunk_id": triplet.chunk_id
+                        "triplet_id": triplet_id,
+                        "chunk_id": chunk_id
+                    })
+                
+                # Source information
+                if source:
+                    relation_source_params.append({
+                        "triplet_id": triplet_id,
+                        "source": source
+                    })
+                
+                # File path information
+                if file_path:
+                    relation_file_path_params.append({
+                        "triplet_id": triplet_id,
+                        "file_path": file_path
                     })
             
             async with self._driver.session(database=self.database) as session:
@@ -337,11 +362,74 @@ class Neo4jConnection:
                         """,
                         rel_chunks=relation_chunk_params
                     )
+                
+                # 5. Set source information if available
+                if relation_source_params:
+                    await session.run(
+                        """
+                        UNWIND $rel_sources AS rel_source
+                        MATCH ()-[r:RELATES {id: rel_source.triplet_id}]->()
+                        SET r.source = rel_source.source
+                        """,
+                        rel_sources=relation_source_params
+                    )
+                
+                # 6. Set file path information if available
+                if relation_file_path_params:
+                    await session.run(
+                        """
+                        UNWIND $rel_file_paths AS rel_file_path
+                        MATCH ()-[r:RELATES {id: rel_file_path.triplet_id}]->()
+                        SET r.file_path = rel_file_path.file_path
+                        """,
+                        rel_file_paths=relation_file_path_params
+                    )
             
             logger.info(f"Added batch of {len(batch)} triplets to Neo4j")
         
         total_time = time.time() - start_time
         logger.info(f"Added {len(triplets)} triplets in {total_time:.2f}s ({len(triplets)/total_time:.1f} triplets/sec)")
+    
+    async def add_extraction_results(
+        self,
+        extraction_results: List[Dict[str, Any]],
+        batch_size: int = 100
+    ):
+        """
+        Add extraction results from GraphExtractor to the graph
+        
+        Args:
+            extraction_results: List of extraction result dictionaries from GraphExtractor.extract_triplets
+                Each dictionary should contain 'text', 'metadata', and 'triplets' keys
+            batch_size: Number of triplets to add in a single batch
+        """
+        if not extraction_results:
+            return
+            
+        # Flatten all triplets from all results
+        all_triplets = []
+        for result in extraction_results:
+            if 'triplets' in result and result['triplets']:
+                # Ensure each triplet has the necessary metadata
+                for triplet in result['triplets']:
+                    # Add missing properties from metadata if they don't exist
+                    for key, value in result.get('metadata', {}).items():
+                        if key not in triplet.metadata:
+                            triplet.metadata[key] = value
+                    
+                    # Set additional properties on triplet object for easy access in add_triplets
+                    triplet.triplet_id = triplet.metadata.get('triplet_id', str(uuid.uuid4()))
+                    triplet.document_id = triplet.metadata.get('document_id')
+                    triplet.chunk_id = triplet.metadata.get('chunk_id')
+                    triplet.page_number = triplet.metadata.get('page_number')
+                    triplet.confidence = triplet.metadata.get('confidence', 1.0)
+                    triplet.source = triplet.metadata.get('source')
+                    triplet.file_path = triplet.metadata.get('file_path')
+                    
+                all_triplets.extend(result['triplets'])
+        
+        # Use the existing add_triplets method to add all triplets
+        await self.add_triplets(all_triplets, batch_size)
     
     async def add_embeddings(
         self,
