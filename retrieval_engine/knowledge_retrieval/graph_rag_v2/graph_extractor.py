@@ -1,9 +1,11 @@
 import json
 import uuid
+import re
 import logging
 import asyncio
 from typing import List, Dict, Any, Optional, Tuple, Union
 from llm_services import LLMProvider
+from .embeddings import EmbeddingProvider
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -12,16 +14,40 @@ logger = logging.getLogger(__name__)
 DEFAULT_KG_TRIPLET_EXTRACT_TMPL = (
     "Some text is provided below. Given the text, extract up to "
     "{max_knowledge_triplets} "
-    "knowledge triplets in the form of (subject, predicate, object). Avoid stopwords.\n"
+    "knowledge triplets in the form of (subject, predicate, object). "
+    "Ensure completeness and avoid omissions. Exclude stopwords.\n"
+    "\n"
+    "### Instructions:\n"
+    "- Identify all possible knowledge triplets without omission.\n"
+    "- Subjects and objects should be meaningful entities (e.g., people, places, organizations, concepts).\n"
+    "- Predicates should express a clear relationship (e.g., 'is a', 'founded in', 'works at').\n"
+    "- Extract temporal and spatial relationships if applicable.\n"
+    "- Maintain contextual integrity when forming triplets.\n"
+    "- Exclude stopwords and unnecessary words.\n"
+    "\n"
     "---------------------\n"
-    "Example:"
-    "Text: Alice is Bob's mother."
-    "Triplets:\n(Alice, is mother of, Bob)\n"
-    "Text: Philz is a coffee shop founded in Berkeley in 1982.\n"
+    "### Example:\n"
+    "Text: Alice is Bob's mother.\n"
     "Triplets:\n"
-    "(Philz, is, coffee shop)\n"
-    "(Philz, founded in, Berkeley)\n"
-    "(Philz, founded in, 1982)\n"
+    "(Alice, is mother of, Bob)\n"
+    "\n"
+    "Text: Tesla was founded by Elon Musk in 2003 in the United States.\n"
+    "Triplets:\n"
+    "(Tesla, was founded by, Elon Musk)\n"
+    "(Tesla, was founded in, 2003)\n"
+    "(Tesla, was founded in, United States)\n"
+    "\n"
+    "Text: The Eiffel Tower is located in Paris and was completed in 1889.\n"
+    "Triplets:\n"
+    "(Eiffel Tower, is located in, Paris)\n"
+    "(Eiffel Tower, was completed in, 1889)\n"
+    "\n"
+    "Text: Apple Inc. acquired Beats Electronics for $3 billion in 2014.\n"
+    "Triplets:\n"
+    "(Apple Inc., acquired, Beats Electronics)\n"
+    "(Apple Inc., acquired for, $3 billion)\n"
+    "(Apple Inc., acquired in, 2014)\n"
+    "\n"
     "---------------------\n"
     "Text: {text}\n"
     "Triplets:\n"
@@ -35,7 +61,6 @@ class KnowledgeTriplet:
         subject: str,
         predicate: str,
         object: str,
-        metadata: Optional[Dict[str, Any]] = None
     ):
         """
         Initialize a knowledge triplet
@@ -49,17 +74,7 @@ class KnowledgeTriplet:
         self.subject = subject
         self.predicate = predicate
         self.object = object
-        self.metadata = metadata or {}
         
-        # Extract common metadata fields for easier access
-        self.triplet_id = self.metadata.get('triplet_id', str(uuid.uuid4()))
-        self.confidence = self.metadata.get('confidence', 1.0)
-        self.document_id = self.metadata.get('document_id')
-        self.chunk_id = self.metadata.get('chunk_id')
-        self.page_number = self.metadata.get('page_number')
-        self.source = self.metadata.get('source')
-        self.file_path = self.metadata.get('file_path')
-    
     def __repr__(self):
         return f"({self.subject}) --[{self.predicate}]--> ({self.object})"
     
@@ -69,14 +84,6 @@ class KnowledgeTriplet:
             "subject": self.subject,
             "predicate": self.predicate,
             "object": self.object,
-            "triplet_id": self.triplet_id,
-            "confidence": self.confidence,
-            "document_id": self.document_id,
-            "chunk_id": self.chunk_id,
-            "page_number": self.page_number,
-            "source": self.source,
-            "file_path": self.file_path,
-            "metadata": self.metadata
         }
 
 class GraphExtractor:
@@ -85,10 +92,11 @@ class GraphExtractor:
     def __init__(
         self,
         llm: LLMProvider,
-        max_knowledge_triplets: int = 10,
+        max_knowledge_triplets: int = 20,
         prompt_template: Optional[str] = None,
         batch_size: int = 5,
-        max_concurrency: int = 10
+        max_concurrency: int = 10,
+        embedding_provider: EmbeddingProvider = None,
     ):
         """
         Initialize a graph extractor
@@ -108,6 +116,7 @@ class GraphExtractor:
         self.prompt_template = prompt_template or DEFAULT_KG_TRIPLET_EXTRACT_TMPL
         self.batch_size = batch_size
         self.max_concurrency = max_concurrency
+        self.embedding_provider = embedding_provider
     
     async def _parse_triplets(
         self, 
@@ -234,7 +243,6 @@ class GraphExtractor:
                     subject=subj,
                     predicate=pred,
                     object=obj,
-                    metadata=triplet_metadata
                 )
                 triplets.append(triplet)
             
@@ -245,6 +253,33 @@ class GraphExtractor:
             logger.error(f"Error extracting triplets: {str(e)}")
             return []
     
+    async def extract_embeddings_entities(
+        self,
+        triplets: Any|List[KnowledgeTriplet],
+    ) -> List[Dict[str, Any]]:
+        """Extract embeddings for entities from text"""
+        if isinstance(triplets, KnowledgeTriplet):
+            triplets = [triplets]
+            entities = []
+            for triplet in triplets:
+                entities.append(triplet.subject)
+                entities.append(triplet.object)
+        elif isinstance(triplets, list):
+            entities = self._extract_entities_from_text_triplets(triplets)
+        else:
+            raise ValueError("triplets must be a KnowledgeTriplet or a list of KnowledgeTriplet")
+        
+        # Remove duplicates
+        entities = list(set(entities))
+        print(entities)
+        # Extract embeddings for entities
+        embeddings = self.embedding_provider.embed_documents(entities)
+
+        # Create a dictionary of entity embeddings
+        entity_embeddings = {entity: embedding for entity, embedding in zip(entities, embeddings)}
+
+        return entity_embeddings
+        
     async def _extract_from_text_batch(
         self,
         texts: List[str],
@@ -309,3 +344,83 @@ class GraphExtractor:
             logger.info(f"Processed batch of {len(batch_texts)} texts, extracted {total_triplets} triplets so far")
         
         return all_results
+    
+    def _extract_entities_from_text_triplets(
+        self,
+        triplets: List[str]
+    ) -> List[str]:
+        """Extract entities from triplets"""
+        # "(Nguyễn trãi) --[Chữ hán]--> (阮廌)"
+        entities = []
+        for triplet in triplets:
+            pattern = r"\((.*?)\)\s*--\[(.*?)\]-->\s*\((.*?)\)"
+            match = re.search(pattern, triplet)
+            if match:
+                entities.append(match.group(1))
+                entities.append(match.group(3))
+        return entities
+
+
+    def get_sample_mock_data(self):
+        """Get sample mock data for testing"""
+        return [
+            {
+                "text": "\nNguyễn Trãi (chữ Hán: 阮廌; sinh 1380 – mất 19 tháng 9 năm 1442), hiệu là Ức Trai (抑齋), là một nhà chính trị, nhà văn, nhà văn hóa lớn của dân tộc Việt Nam. \nÔng đã tham gia tích cực cuộc Khởi nghĩa Lam Sơn do Lê Lợi lãnh đạo chống lại sự xâm lược của nhà Minh (Trung Quốc) với Đại Việt. \nKhi cuộc khởi nghĩa thành công vào năm 1428, Nguyễn Trãi trở thành một trong những khai quốc công thần của triều đại quân chủ nhà Hậu Lê trong Lịch sử Việt Nam.[2]\n",
+                "metadata": {
+                "source": "Wikipedia",
+                "url": "https://en.wikipedia.org/wiki/Nguy%E1%BB%85n_Tr%C3%A3i",
+                "title": "Nguyễn Trãi",
+                "author": "Wikipedia",
+                "published_date": "2021-03-01",
+                "content_type": "text/plain",
+                "language": "vi",
+                "format": "text",
+                "encoding": "utf-8"
+                },
+                "triplets": [
+                    "(Nguyễn trãi) --[Chữ hán]--> (阮廌)",
+                    "(Nguyễn trãi) --[Sinh]--> (1380)",
+                    "(Nguyễn trãi) --[Mất]--> (1442)",
+                    "(Nguyễn trãi) --[Mất month]--> (9)",
+                    "(Nguyễn trãi) --[Hiệu]--> (Ức trai)",
+                    "(Nguyễn trãi) --[Is a]--> (Nhà chính trị)",
+                    "(Nguyễn trãi) --[Is a]--> (Nhà văn)",
+                    "(Nguyễn trãi) --[Is a]--> (Nhà văn hóa)",
+                    "(Nguyễn trãi) --[Is of]--> (Dân tộc việt nam)",
+                    "(Nguyễn trãi) --[Tham gia]--> (Khởi nghĩa lam sơn)",
+                    "(Khởi nghĩa lam sơn) --[Lãnh đạo]--> (Lê lợi)",
+                    "(Khởi nghĩa lam sơn) --[Chống lại]--> (Xâm lược nhà minh)",
+                    "(Nhà minh) --[Is of]--> (Trung quốc)",
+                    "(Nhà minh) --[Xâm lược]--> (Đại việt)",
+                    "(Khởi nghĩa) --[Thành công]--> (1428)",
+                    "(Nguyễn trãi) --[Trở thành]--> (Khai quốc công thần)",
+                    "(Nguyễn trãi) --[Is of]--> (Triều đại quân chủ nhà hậu lê)",
+                    "(Triều đại quân chủ nhà hậu lê) --[Is in]--> (Lịch sử việt nam)"
+                ]
+            },
+            {
+                "text": "\nHoàng Mậu Trung (hiệu là Ngọc Tự Hàn) sinh năm 1998 năm nay 27 tuổi học tại PTIT. Sinh ra trong một gia đình thuần nông tại Hà Lĩnh, Hà Trung, Thanh Hóa.\n",
+                "metadata": {
+                "source": "Wikipedia",
+                "url": "https://en.wikipedia.org/wiki/Nguy%E1%BB%85n_Tr%C3%A3i",
+                "title": "Nguyễn Trãi",
+                "author": "Wikipedia",
+                "published_date": "2021-03-01",
+                "content_type": "text/plain",
+                "language": "vi",
+                "format": "text",
+                "encoding": "utf-8"
+                },
+                "triplets": [
+                    "(Hoàng mậu trung) --[Hiệu là]--> (Ngọc tự hàn)",
+                    "(Hoàng mậu trung) --[Sinh năm]--> (1998)",
+                    "(Hoàng mậu trung) --[Tuổi]--> (27)",
+                    "(Hoàng mậu trung) --[Học tại]--> (Ptit)",
+                    "(Hoàng mậu trung) --[Sinh ra trong]--> (Gia đình)",
+                    "(Hoàng mậu trung) --[Sinh ra tại]--> (Hà lĩnh)",
+                    "(Hà lĩnh) --[Thuộc]--> (Hà trung)",
+                    "(Hà trung) --[Thuộc]--> (Thanh hóa)",
+                    "(Gia đình) --[Thuần nông]--> (True)"
+                ]
+            }
+            ]

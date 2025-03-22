@@ -1,136 +1,159 @@
-# Graph RAG v2.0
+# Graph RAG v2
 
-Knowledge graph-based Retrieval Augmented Generation using Neo4j.
+Graph RAG v2 là một framework Retrieval Augmented Generation (RAG) dựa trên đồ thị tri thức, được thiết kế để kết hợp các khả năng tìm kiếm ngữ nghĩa của các mô hình embedding với sức mạnh biểu diễn mối quan hệ của đồ thị tri thức (knowledge graph).
 
-## Features
+## Cấu trúc Module
 
-- **Knowledge Graph Extraction**: Extract knowledge triplets (subject-predicate-object) from text using LLMs (OpenAI or Gemini)
-- **Async Neo4j Integration**: Store and query knowledge graph in Neo4j database with asynchronous operations
-- **Direct Embeddings**: Directly uses vector_rag embeddings without additional wrapper layers
-- **Hybrid Search**: Combine semantic similarity with graph structure for comprehensive querying
-- **Batch Processing**: Process and index documents in batches with concurrent operations
-- **Chunking Strategy**: Intelligent document chunking with customizable sizing and overlap
-- **Caching**: Optional embedding caching to reduce API calls and improve performance
-- **Modular Design**: Combine components independently or use the full RAG system
+Module được tổ chức thành các thành phần chính sau:
 
-## Installation
+1. **GraphRAG**: Lớp chính cho phép truy vấn và tìm kiếm thông tin dựa trên đồ thị, thừa kế từ BaseRAG.
+2. **GraphBuilder**: Lớp xử lý việc xây dựng đồ thị tri thức từ các tài liệu.
+3. **SimpleNeo4jConnection**: Lớp xử lý kết nối và truy vấn cơ sở dữ liệu Neo4j.
+4. **GraphExtractor**: Lớp trích xuất thông tin từ văn bản thành các bộ ba tri thức (knowledge triplets).
 
-1. Set up a Neo4j database (local or AuraDB)
-2. Install the package dependencies:
+## Chức năng
 
-```bash
-pip install -r requirements.txt
-```
+### 1. GraphRAG
 
-3. Set environment variables:
+Tập trung vào việc truy xuất thông tin từ đồ thị tri thức:
 
-```bash
-export NEO4J_URI="bolt://localhost:7687"
-export NEO4J_USERNAME="neo4j"
-export NEO4J_PASSWORD="your-password"
-export OPENAI_API_KEY="your-openai-key"
-# Optional for Gemini
-export GOOGLE_API_KEY="your-google-key"
-```
+- Kế thừa từ BaseRAG để tương thích với các phương thức RAG tiêu chuẩn
+- Hỗ trợ tìm kiếm ngữ nghĩa dựa trên vector embedding
+- Hỗ trợ tìm kiếm dựa trên cấu trúc đồ thị
+- Kết hợp kết quả từ cả hai phương pháp để cung cấp kết quả phong phú hơn
 
-## Usage
+### 2. GraphBuilder
 
-### Simple Example
+Tập trung vào việc xây dựng và duy trì đồ thị tri thức:
 
-```python
-import asyncio
-from graph_rag_v2 import GraphRAG
+- Xử lý tài liệu để trích xuất bộ ba tri thức
+- Tạo embedding cho các thực thể
+- Lưu trữ thông tin vào cơ sở dữ liệu Neo4j
+- Hỗ trợ xử lý nhiều tài liệu đồng thời
 
-async def main():
-    # Initialize GraphRAG with defaults
-    graph_rag = GraphRAG(
-        neo4j_uri="bolt://localhost:7687",
-        neo4j_username="neo4j",
-        neo4j_password="password",
-        graph_extractor_type="openai",
-        embedding_provider_type="openai"
-    )
-    
-    # Process a document
-    await graph_rag.initialize()
-    await graph_rag.process_document(
-        text="Artificial intelligence (AI) is intelligence demonstrated by machines.",
-        document_id="ai_intro"
-    )
-    
-    # Query the knowledge graph
-    results = await graph_rag.query("What is artificial intelligence?")
-    
-    # Print results
-    for result in results:
-        print(f"{result.get('subject')} {result.get('predicate')} {result.get('object')}")
-    
-    # Close connections
-    await graph_rag.close()
+**Lưu ý**: GraphBuilder không xử lý việc chia nhỏ tài liệu (chunking), mà xử lý trực tiếp văn bản đầu vào. Nếu cần chia nhỏ văn bản dài, hãy làm điều đó trước khi truyền vào GraphBuilder hoặc sử dụng module chunking riêng biệt.
 
-if __name__ == "__main__":
-    asyncio.run(main())
-```
+### 3. SimpleNeo4jConnection
 
-### Advanced Configuration
+Quản lý kết nối và truy vấn đến Neo4j:
 
-GraphRAG supports extensive customization:
+- Thiết lập và duy trì kết nối đến cơ sở dữ liệu Neo4j
+- Thực hiện các truy vấn cơ bản và phức tạp
+- Quản lý vector embedding của các thực thể
+- Xử lý việc lưu trữ bộ ba tri thức
+
+### 4. GraphExtractor
+
+Trích xuất thông tin từ văn bản:
+
+- Sử dụng LLM để trích xuất các bộ ba tri thức từ văn bản
+- Chuyển đổi đầu ra của LLM thành các đối tượng KnowledgeTriplet
+- Hỗ trợ xử lý hàng loạt các văn bản
+
+## Ví dụ sử dụng
+
+### Tạo đồ thị tri thức
 
 ```python
-graph_rag = GraphRAG(
-    # Neo4j configuration
-    neo4j_uri="bolt://localhost:7687",
+from retrieval_engine.knowledge_retrieval.graph_rag_v2 import GraphBuilder
+
+# Khởi tạo GraphBuilder
+builder = GraphBuilder(
+    neo4j_uri="neo4j://localhost:7687",
     neo4j_username="neo4j",
     neo4j_password="password",
-    
-    # Knowledge extraction
-    graph_extractor_type="openai",
-    graph_extractor_model="gpt-4o",
-    graph_extractor_temperature=0.1,
-    
-    # Embedding providers (direct use of vector_rag embeddings)
-    embedding_provider_type="huggingface",
-    embedding_model="all-MiniLM-L6-v2",
-    embedding_dimension=384,
-    enable_caching=True,
-    cache_dir=".embedding_cache",
-    
-    # Processing parameters
-    max_workers=4,
-    default_chunk_size=500,
-    default_chunk_overlap=50,
-    
-    # Query parameters
-    semantic_search_limit=10,
-    graph_search_limit=10,
-    hybrid_search=True,
-    similarity_threshold=0.7
+    graph_extractor_model="gpt-4o"
 )
+
+# Xử lý tài liệu
+async def process():
+    await builder.initialize()
+    result = await builder.process_document(
+        text="Albert Einstein was a German physicist who developed the theory of relativity.",
+        document_id="doc1",
+        document_metadata={"source": "Wikipedia"}
+    )
+    print(f"Processed document: {result}")
+    await builder.close()
+
+# Chạy xử lý
+import asyncio
+asyncio.run(process())
 ```
 
-## Embedding Providers
+### Truy vấn đồ thị tri thức
 
-GraphRAG v2.0 directly uses vector_rag embeddings for consistency. Supported providers:
+```python
+from retrieval_engine.knowledge_retrieval.graph_rag_v2 import GraphRAG
 
-- **OpenAI**: Fast, high-quality embeddings using OpenAI's API
-  - Default model: `text-embedding-3-small`
+# Khởi tạo GraphRAG
+rag = GraphRAG(
+    neo4j_uri="neo4j://localhost:7687",
+    neo4j_username="neo4j",
+    neo4j_password="password"
+)
 
-- **HuggingFace**: Local embedding models with sentence-transformers
-  - Default model: `all-MiniLM-L6-v2`
+# Truy vấn đồ thị
+results = rag.retrieve(
+    query="What did Einstein develop?",
+    top_k=5,
+    use_semantic=True
+)
 
-- **Google**: Embeddings from Google's Generative AI models
-  - Requires: `GOOGLE_API_KEY`
-  - Default model: `embedding-001`
+# Hiển thị kết quả
+for result in results:
+    print(f"- {result['text']}")
+```
 
-## Components
+## Xử lý tài liệu dài
 
-GraphRAG consists of these main components:
+Đối với tài liệu dài, bạn có thể sử dụng module chunking riêng biệt hoặc xử lý trước khi truyền vào GraphBuilder:
 
-1. **Graph Extractor**: Extracts knowledge triplets from text using LLMs
-2. **Embeddings**: Vector embeddings directly from vector_rag
-3. **Neo4j Connection**: Manages the connection and operations with the Neo4j database
-4. **GraphRAG**: The main class that orchestrates the entire system
+```python
+from retrieval_engine.knowledge_retrieval.graph_rag_v2 import GraphBuilder
+from text_processing import TextChunker  # Module chia nhỏ văn bản riêng biệt
 
-## License
+# Khởi tạo
+builder = GraphBuilder(
+    neo4j_uri="neo4j://localhost:7687",
+    neo4j_username="neo4j",
+    neo4j_password="password"
+)
 
-MIT
+async def process_long_document(text, document_id, metadata=None):
+    # Chia nhỏ văn bản thành các chunk
+    chunker = TextChunker(chunk_size=1000, chunk_overlap=100)
+    chunks = chunker.split_text(text)
+    
+    # Xử lý từng chunk
+    results = []
+    for i, chunk in enumerate(chunks):
+        chunk_id = f"{document_id}_chunk_{i}"
+        chunk_metadata = metadata.copy() if metadata else {}
+        chunk_metadata["chunk_id"] = chunk_id
+        chunk_metadata["chunk_index"] = i
+        
+        # Xử lý chunk bằng GraphBuilder
+        result = await builder.process_document(
+            text=chunk,
+            document_id=chunk_id,
+            document_metadata=chunk_metadata
+        )
+        results.append(result)
+    
+    return results
+```
+
+## Tài liệu API
+
+Xem mô tả phương thức chi tiết trong docstrings của từng lớp.
+
+## Yêu cầu
+
+- Python 3.7+
+- Neo4j database (có thể sử dụng Neo4j Desktop hoặc Neo4j Aura Cloud)
+- Các thư viện Python: neo4j, openai (hoặc thư viện embedding khác được hỗ trợ)
+
+## Lưu ý cài đặt
+
+Để sử dụng vector search trong Neo4j, bạn cần sử dụng Neo4j 5.0+ đối với các kịch bản xử lý tiếng Việt.

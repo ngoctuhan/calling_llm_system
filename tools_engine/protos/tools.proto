@@ -20,6 +20,12 @@ service DataTransformationService {
   rpc ExecutePythonScript (PythonScriptRequest) returns (PythonScriptResponse);
 }
 
+// Speech processing service for audio transcription
+service SpeechProcessingService {
+  // Transcribe audio to text using Speech-to-Text
+  rpc TranscribeSpeech (SpeechTranscriptionRequest) returns (SpeechTranscriptionResponse);
+}
+
 // Request message for text extraction
 message TextExtractionRequest {
   bytes image_data = 1;
@@ -79,4 +85,30 @@ message PythonScriptResponse {
   bool success = 2;
   string error_message = 3;
   float execution_time = 4;
+}
+
+// Request message for speech transcription
+message SpeechTranscriptionRequest {
+  bytes audio_data = 1;
+  string audio_format = 2; // "wav", "mp3", "ogg", etc.
+  string language_code = 3; // "en-US", "fr-FR", etc.
+  bool enhanced_model = 4; // Use enhanced model if available
+  int32 sample_rate_hertz = 5; // Audio sample rate in Hertz
+  repeated string phrases = 6; // Optional phrases to boost recognition accuracy
+}
+
+// Response message for speech transcription
+message SpeechTranscriptionResponse {
+  string transcript = 1;
+  bool success = 2;
+  string error_message = 3;
+  float confidence_score = 4;
+  repeated AlternativeTranscript alternatives = 5;
+  float duration_seconds = 6;
+}
+
+// Alternative transcripts with confidence scores
+message AlternativeTranscript {
+  string transcript = 1;
+  float confidence = 2;
 } 

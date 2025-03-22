@@ -19,7 +19,7 @@ def create_embedding(
     model_name: str = None,
     api_key: str = None,
     cache: bool = True,
-    cache_dir: str = ".embedding_cache",
+    cache_dir: str = ".vector_cache",
     **kwargs
 ):
     """

@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Union, Tuple
 import numpy as np
 import hashlib
-import json
+import traceback
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -326,6 +326,7 @@ class GoogleAIEmbeddings(EmbeddingProvider):
             return np.array(embedding.embeddings[0].values)
             
         except Exception as e:
+            print(f"Error generating embeddings with Google AI: {str(e)}")
             logger.error(f"Error generating embeddings with Google AI: {str(e)}")
             # Return zeros as fallback
             return np.zeros(self.dimension)
@@ -345,29 +346,29 @@ class GoogleAIEmbeddings(EmbeddingProvider):
         
         # Remove empty or whitespace-only texts
         texts = [text for text in texts if text and not text.isspace()]
-        
         if not texts:
             return np.array([])
             
         all_embeddings = []
-        
+        batch_embeddings = []
         # Process in batches due to API limits
         for i in range(0, len(texts), self.batch_size):
             batch_texts = texts[i:i+self.batch_size]
-            batch_embeddings = []
             try:
-                embedding = self.client.models .embed_content(
+                embedding = self.client.models.embed_content(
                     model=self.model_name,
                     contents=batch_texts,
                 )
                 batch_embeddings.append([emb.values for emb in embedding.embeddings])
+                
             except Exception as e:
                 logger.error(f"Error generating embedding for document with Google AI: {str(e)}")
                 # Add zero embedding as fallback
                 batch_embeddings.append(np.zeros(self.dimension))
-            
-            all_embeddings.extend(batch_embeddings)
-        return np.array(all_embeddings[0], dtype=np.float32)
+        
+        # Flatten the batch embeddings
+        all_embeddings.extend([item for sublist in batch_embeddings for item in sublist])
+        return np.array(all_embeddings, dtype=np.float32).tolist()
     
     @property
     def dimension(self) -> int:

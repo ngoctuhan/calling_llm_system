@@ -1,402 +1,183 @@
 import os
-import uuid
-import json
 import logging
 import asyncio
-import time
-from typing import List, Dict, Any, Optional, Tuple, Union
-from concurrent.futures import ThreadPoolExecutor
+from typing import List, Dict, Any, Optional
 
-from .graph_extractor import GraphExtractor, KnowledgeTriplet, create_graph_extractor
-from .neo4j_connection import Neo4jConnection
-from .embeddings import create_embedding
+from ..base_rag import BaseRAG
+from .neo4j_connection import SimpleNeo4jConnection
+from .graph_extractor import GraphExtractor
+from .embeddings import EmbeddingProvider
 
 logger = logging.getLogger(__name__)
 
-class GraphRAG:
+class GraphRAG(BaseRAG):
     """
-    Graph RAG implementation using Neo4j for knowledge graph storage and retrieval
+    Graph-based Retrieval Augmented Generation (RAG) system
     
-    This class implements the knowledge graph pattern for Retrieval Augmented Generation
-    with optimized performance for both indexing and querying.
+    This implementation uses a knowledge graph stored in Neo4j to provide 
+    context-aware retrieval through semantic and structured search.
     """
     
     def __init__(
         self,
         # Neo4j configuration
-        neo4j_uri: str = None,
-        neo4j_username: str = None,
-        neo4j_password: str = None,
-        neo4j_database: str = "neo4j",
-        
-        # Knowledge extraction
-        graph_extractor_type: str = "openai",
-        graph_extractor_model: str = "gpt-4o",
-        graph_extractor_temperature: float = 0.1,
-        
-        # Embedding service
-        embedding_provider_type: str = "openai",
-        embedding_model: str = "text-embedding-3-small",
-        embedding_dimension: int = None,
-        enable_caching: bool = True,
-        cache_dir: str = ".embedding_cache",
-        
-        # Processing configuration
-        max_workers: int = 4,
-        default_chunk_size: int = 1000,
-        default_chunk_overlap: int = 100,
+        graph_store: SimpleNeo4jConnection,
+        graph_extractor: GraphExtractor,
+        embedding_provider: EmbeddingProvider,
         
         # Query configuration
         semantic_search_limit: int = 10,
         graph_search_limit: int = 10,
         hybrid_search: bool = True,
         similarity_threshold: float = 0.7,
+        max_hops: int = 2,
         
-        # For backward compatibility
-        neo4j_config: Dict[str, Any] = None,
-        extractor_config: Dict[str, Any] = None,
-        embedding_config: Dict[str, Any] = None
     ):
         """
         Initialize GraphRAG
         
         Args:
-            neo4j_uri: Neo4j connection URI
-            neo4j_username: Neo4j username
-            neo4j_password: Neo4j password
-            neo4j_database: Neo4j database name
-            graph_extractor_type: Type of extractor ("openai" or "gemini")
-            graph_extractor_model: Model name for the extractor
-            graph_extractor_temperature: Temperature for extractor
-            embedding_provider_type: Type of embedding provider ("openai", "huggingface", or "google")
-            embedding_model: Name of the embedding model
-            embedding_dimension: Dimension of embeddings (optional - inferred from model if not provided)
-            enable_caching: Whether to enable caching for embeddings
-            cache_dir: Directory to store cached embeddings
-            max_workers: Maximum number of concurrent workers for processing
-            default_chunk_size: Default size of text chunks for processing
-            default_chunk_overlap: Default overlap between text chunks
             semantic_search_limit: Maximum number of results from semantic search
             graph_search_limit: Maximum number of results from graph search
             hybrid_search: Whether to use hybrid search (semantic + graph)
             similarity_threshold: Threshold for semantic similarity
-            neo4j_config: Legacy Neo4j configuration (for backward compatibility)
-            extractor_config: Legacy extractor configuration (for backward compatibility)
-            embedding_config: Legacy embedding configuration (for backward compatibility)
+            max_hops: Maximum number of hops for graph traversal
         """
-        # Handle legacy configuration format
-        if neo4j_config:
-            neo4j_uri = neo4j_config.get("uri", neo4j_uri)
-            neo4j_username = neo4j_config.get("username", neo4j_username)
-            neo4j_password = neo4j_config.get("password", neo4j_password)
-            neo4j_database = neo4j_config.get("database", neo4j_database)
-            
-        if extractor_config:
-            graph_extractor_type = extractor_config.get("type", graph_extractor_type)
-            graph_extractor_model = extractor_config.get("model", graph_extractor_model)
-            graph_extractor_temperature = extractor_config.get("temperature", graph_extractor_temperature)
-            
-        if embedding_config:
-            embedding_provider_type = embedding_config.get("type", embedding_provider_type)
-            embedding_model = embedding_config.get("model", embedding_model)
-            embedding_dimension = embedding_config.get("dimension", embedding_dimension)
         
-        # Store configuration
-        self.neo4j_config = {
-            "uri": neo4j_uri,
-            "username": neo4j_username,
-            "password": neo4j_password,
-            "database": neo4j_database
-        }
-        
-        self.extractor_config = {
-            "extractor_type": graph_extractor_type,
-            "model": graph_extractor_model,
-            "temperature": graph_extractor_temperature
-        }
-        
-        self.embedding_config = {
-            "provider_type": embedding_provider_type,
-            "model_name": embedding_model,
-            "dimensions": embedding_dimension,
-            "cache": enable_caching,
-            "cache_dir": cache_dir
-        }
-        
-        # Processing settings
-        self.max_workers = max_workers
-        self.default_chunk_size = default_chunk_size
-        self.default_chunk_overlap = default_chunk_overlap
+        self._neo4j = graph_store
+        self._extractor = graph_extractor
+        self._embedder = embedding_provider
         
         # Query settings
         self.semantic_search_limit = semantic_search_limit
         self.graph_search_limit = graph_search_limit
         self.hybrid_search = hybrid_search
         self.similarity_threshold = similarity_threshold
-        
-        # Initialize components to None (they'll be created during initialization)
-        self._neo4j = None
-        self._extractor = None
-        self._embedder = None
-        self._initialized = False
-    
-    async def initialize(self):
-        """Initialize connections and components"""
-        if not self._initialized:
-            # Create Neo4j connection
-            self._neo4j = Neo4jConnection(
-                uri=self.neo4j_config["uri"],
-                username=self.neo4j_config["username"],
-                password=self.neo4j_config["password"],
-                database=self.neo4j_config["database"],
-                embedding_dim=self.embedding_config.get("dimensions")
-            )
-            
-            # Connect to Neo4j and set up database
-            await self._neo4j.connect()
-            await self._neo4j.setup_database()
-            
-            # Create graph extractor
-            self._extractor = create_graph_extractor(
-                extractor_type=self.extractor_config["extractor_type"],
-                model=self.extractor_config["model"],
-                temperature=self.extractor_config["temperature"]
-            )
-            
-            # Create embedding provider using direct vector_rag embeddings
-            self._embedder = create_embedding(
-                provider_type=self.embedding_config["provider_type"],
-                model_name=self.embedding_config["model_name"],
-                cache=self.embedding_config["cache"],
-                cache_dir=self.embedding_config["cache_dir"]
-            )
-            
-            # Update the Neo4j embedding dimension if not explicitly set
-            if not self.embedding_config.get("dimensions"):
-                self._neo4j.embedding_dim = self._embedder.dimension
-            
-            self._initialized = True
-            logger.info("GraphRAG initialized successfully")
+        self.max_hops = max_hops
     
     async def close(self):
         """Close all connections"""
         if self._neo4j:
-            await self._neo4j.close()
-        
-        if self._extractor and hasattr(self._extractor, 'close'):
-            await self._extractor.close()
+            self._neo4j.close()
         
         self._initialized = False
         logger.info("GraphRAG connections closed")
-    
-    async def __aenter__(self):
-        await self.initialize()
-        return self
-        
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
     
-    async def process_document(
-        self,
-        text: str,
-        document_id: str = None,
-        document_metadata: Dict[str, Any] = None,
-        chunk_size: int = None,
-        chunk_overlap: int = None,
-        extract_triplets: bool = True,
-        add_embeddings: bool = True,
-        batch_size: int = 100
-    ) -> Dict[str, Any]:
+    def retrieve(self, query: str, top_k: int = 5, **kwargs) -> List[Dict[str, Any]]:
         """
-        Process a document to extract knowledge and add to the graph
+        Retrieve knowledge graph information based on a query.
         
         Args:
-            text: The document text
-            document_id: Unique identifier for the document (generated if not provided)
-            document_metadata: Additional metadata for the document
-            chunk_size: Size of text chunks (default to class default)
-            chunk_overlap: Overlap between text chunks (default to class default)
-            extract_triplets: Whether to extract triplets from the text
-            add_embeddings: Whether to add embeddings for entities
-            batch_size: Batch size for database operations
+            query (str): The user query
+            top_k (int): Number of results to retrieve
+            **kwargs: Additional parameters:
+                use_semantic: Whether to use semantic search (default: True)
+                use_graph: Whether to use graph-based search (default: True if use_semantic is False)
+                similarity_threshold: Threshold for semantic similarity
             
         Returns:
-            Processing results
-        """
-        if not self._initialized:
-            await self.initialize()
+            List[Dict[str, Any]]: List of retrieved triplets
+        """  
+        # Set up query parameters
+        use_semantic = kwargs.get("use_semantic", True)
+        use_graph = kwargs.get("use_graph", not use_semantic)
+        similarity_threshold = kwargs.get("similarity_threshold", self.similarity_threshold)
         
-        # Generate document ID if not provided
-        document_id = document_id or f"doc_{uuid.uuid4()}"
-        document_metadata = document_metadata or {}
-        chunk_size = chunk_size or self.default_chunk_size
-        chunk_overlap = chunk_overlap or self.default_chunk_overlap
+        # Generate embedding for semantic search
+        query_embedding = None
+        if use_semantic:
+            query_embedding = self._embedder.embed_query(query)
         
-        start_time = time.time()
-        logger.info(f"Processing document {document_id} ({len(text)} characters)")
+        # Run the async query
+        results = asyncio.run(self._async_retrieve(
+            query_text=query,
+            query_embedding=query_embedding,
+            use_semantic_search=use_semantic,
+            use_graph_search=use_graph,
+            limit=top_k,
+            similarity_threshold=similarity_threshold
+        ))
         
-        # Split text into chunks
-        chunks = self._split_text(text, chunk_size, chunk_overlap)
-        logger.info(f"Split document into {len(chunks)} chunks")
-        
-        triplets = []
-        if extract_triplets:
-            # Extract triplets concurrently from chunks
-            triplet_tasks = []
+        print("results: ", results)
+        # Format the results to match the BaseRAG expected format
+        formatted_results = []
+        for result in results:
+            # Convert triplet to text format
+            text = f"{result['subject']} {result['predicate']} {result['object']}"
             
-            for i, chunk_text in enumerate(chunks):
-                chunk_id = f"{document_id}_chunk_{i}"
-                
-                # Create task for triplet extraction
-                task = asyncio.create_task(
-                    self._extractor.extract_triplets(
-                        text=chunk_text,
-                        document_id=document_id,
-                        chunk_id=chunk_id,
-                        page_number=i
-                    )
-                )
-                triplet_tasks.append(task)
+            formatted_result = {
+                "text": text,
+                "content": text,
+                "triplet": {
+                    "subject": result.get("subject"),
+                    "predicate": result.get("predicate"),
+                    "object": result.get("object")
+                },
+                "metadata": {
+                    "source": result.get("source", "knowledge_graph"),
+                    "confidence": result.get("relevance_score", 1.0),
+                    "seed_entity": result.get("seed_entity", ""),
+                    "document_id": result.get("document_id", "")
+                }
+            }
+            formatted_results.append(formatted_result)
             
-            # Gather all triplet extraction results
-            chunk_triplets = await asyncio.gather(*triplet_tasks)
-            
-            # Flatten the list of lists into a single list of triplets
-            triplets = [triplet for sublist in chunk_triplets for triplet in sublist]
-            
-            # Add triplets to Neo4j
-            if triplets:
-                await self._neo4j.add_triplets(triplets, batch_size=batch_size)
-                logger.info(f"Added {len(triplets)} triplets to the graph")
-        
-        entity_embeddings = {}
-        if add_embeddings and triplets:
-            # Collect all unique entities
-            entities = set()
-            for triplet in triplets:
-                entities.add(triplet.subject)
-                entities.add(triplet.object)
-            
-            # Get embeddings for entities using direct vector_rag embeddings
-            entity_embeddings = {}
-            for entity in entities:
-                entity_embeddings[entity] = self._embedder.embed_query(entity)
-            
-            # Add embeddings to Neo4j
-            await self._neo4j.add_embeddings(entity_embeddings, batch_size=batch_size)
-            logger.info(f"Added embeddings for {len(entity_embeddings)} entities")
-        
-        processing_time = time.time() - start_time
-        logger.info(f"Document processing completed in {processing_time:.2f}s")
-        
-        return {
-            "document_id": document_id,
-            "chunks": len(chunks),
-            "triplets": len(triplets),
-            "entities": len(entity_embeddings) if entity_embeddings else 0,
-            "processing_time": processing_time
-        }
+        return formatted_results
     
-    async def process_documents(
-        self,
-        documents: List[Dict[str, Any]],
-        concurrency: int = None,
-        **kwargs
-    ) -> List[Dict[str, Any]]:
+    def rerank(self, query: str, documents: List[Dict[str, Any]], top_k: int = 5) -> List[Dict[str, Any]]:
         """
-        Process multiple documents concurrently
+        Rerank retrieved documents based on relevance to the query.
         
         Args:
-            documents: List of document dictionaries with 'text' and optional fields
-            concurrency: Maximum number of documents to process concurrently
-            **kwargs: Additional arguments for process_document
+            query (str): The original user query
+            documents (List[Dict]): List of retrieved documents to rerank
+            top_k (int): Number of top results to return after reranking
             
         Returns:
-            List of processing results
+            List[Dict[str, Any]]: Reranked documents with scores
         """
-        if not self._initialized:
-            await self.initialize()
-        
-        concurrency = concurrency or min(self.max_workers, len(documents))
-        logger.info(f"Processing {len(documents)} documents with concurrency {concurrency}")
-        
-        # Process documents in batches for better memory management
-        results = []
-        
-        # Create a semaphore to limit concurrency
-        semaphore = asyncio.Semaphore(concurrency)
-        
-        async def process_with_semaphore(doc):
-            async with semaphore:
-                text = doc.pop("text")
-                doc_id = doc.pop("document_id", None)
-                metadata = doc.pop("metadata", {})
-                
-                # Merge remaining doc fields with kwargs
-                doc_kwargs = {**kwargs, **doc}
-                
-                return await self.process_document(
-                    text=text,
-                    document_id=doc_id,
-                    document_metadata=metadata,
-                    **doc_kwargs
-                )
-        
-        # Start processing tasks
-        tasks = [process_with_semaphore(doc) for doc in documents]
-        results = await asyncio.gather(*tasks)
-        
-        return results
+        # Simple reranking based on confidence/relevance score
+        reranked = sorted(documents, key=lambda x: x.get("metadata", {}).get("confidence", 0), reverse=True)
+        return reranked[:top_k]
     
-    async def query(
+    async def _async_retrieve(
         self,
         query_text: str,
+        query_embedding: List[float] = None,
         use_semantic_search: bool = True,
         use_graph_search: bool = True,
-        combine_results: bool = True,
-        semantic_search_limit: int = None,
-        graph_search_limit: int = None,
-        similarity_threshold: float = None
+        limit: int = 10,
+        similarity_threshold: float = 0.7
     ) -> List[Dict[str, Any]]:
         """
-        Query the knowledge graph
+        Asynchronous retrieval from knowledge graph
         
         Args:
             query_text: The query text
+            query_embedding: Embedding vector for the query
             use_semantic_search: Whether to use semantic search
             use_graph_search: Whether to use graph-based search
-            combine_results: Whether to combine and rank results
-            semantic_search_limit: Maximum number of semantic search results
-            graph_search_limit: Maximum number of graph search results
+            limit: Maximum number of results to return
             similarity_threshold: Threshold for semantic similarity
             
         Returns:
             List of matching triplets
         """
-        if not self._initialized:
-            await self.initialize()
-        
-        # Use class defaults if not specified
-        semantic_search_limit = semantic_search_limit or self.semantic_search_limit
-        graph_search_limit = graph_search_limit or self.graph_search_limit
-        similarity_threshold = similarity_threshold or self.similarity_threshold
-        
-        # Use only specified search methods
-        if not use_semantic_search and not use_graph_search:
-            logger.warning("Neither semantic nor graph search enabled. Enabling graph search.")
-            use_graph_search = True
-        
         semantic_results = []
         graph_results = []
         
         # Run searches in parallel
         search_tasks = []
         
-        if use_semantic_search:
+        if use_semantic_search and query_embedding is not None:
             semantic_task = asyncio.create_task(
                 self._perform_semantic_search(
-                    query_text,
-                    num_results=semantic_search_limit,
+                    query_text=query_text,
+                    query_embedding=query_embedding,
+                    num_results=limit,
                     similarity_threshold=similarity_threshold
                 )
             )
@@ -406,7 +187,7 @@ class GraphRAG:
             graph_task = asyncio.create_task(
                 self._perform_structured_search(
                     query_text,
-                    num_results=graph_search_limit
+                    num_results=limit
                 )
             )
             search_tasks.append(graph_task)
@@ -415,20 +196,20 @@ class GraphRAG:
         search_results = await asyncio.gather(*search_tasks)
         
         # Assign results based on which searches were enabled
-        if use_semantic_search and use_graph_search:
+        if use_semantic_search and use_graph_search and query_embedding is not None:
             semantic_results = search_results[0]
             graph_results = search_results[1]
-        elif use_semantic_search:
+        elif use_semantic_search and query_embedding is not None:
             semantic_results = search_results[0]
         elif use_graph_search:
             graph_results = search_results[0]
         
         # Combine results if needed
-        if combine_results and semantic_results and graph_results:
+        if self.hybrid_search and semantic_results and graph_results:
             combined_results = self._combine_search_results(
                 semantic_results,
                 graph_results,
-                num_results=max(semantic_search_limit, graph_search_limit)
+                num_results=limit
             )
             return combined_results
         elif semantic_results:
@@ -438,9 +219,195 @@ class GraphRAG:
         else:
             return []
     
+    async def _find_similar_entities(
+        self,
+        query_embedding: List[float],
+        limit: int = 10,
+        similarity_threshold: float = 0.7
+    ):
+        """
+        Find similar entities to the query embedding
+        
+        Args:
+            query_embedding: Embedding vector of the query
+            limit: Number of entities to return
+            similarity_threshold: Minimum similarity score
+            
+        Returns:
+            List of similar entities and their similarity scores
+        """
+      
+            
+        # Perform vector search through Neo4j
+        result = self._neo4j.run_vector_search(
+            query_embedding=query_embedding,
+            limit=limit,
+            similarity_threshold=similarity_threshold
+        )
+        
+        return result
+    
+    async def _semantic_entity_query(
+        self,
+        query_text: str,
+        query_embedding: List[float],
+        hops: int = None,
+        limit: int = 20,
+        similarity_threshold: float = 0.7
+    ):
+        """
+        Perform semantic query based on vector embeddings and graph traversal
+        
+        Args:
+            query_text: Original text query
+            query_embedding: Embedding vector of the query
+            hops: Number of graph traversal steps (default: self.max_hops)
+            limit: Maximum number of results
+            similarity_threshold: Minimum similarity threshold
+            
+        Returns:
+            List of related triplets
+        """
+        
+        hops = hops if hops is not None else self.max_hops
+        
+        # Find similar entities based on vector embedding
+        similar_entities = await self._find_similar_entities(
+            query_embedding,
+            limit=5,  # Limit the number of seed entities
+            similarity_threshold=similarity_threshold
+        )
+        
+        if not similar_entities:
+            logger.warning(f"No similar entities found by embedding for query: {query_text}")
+            
+            # Fallback: text-based search if no entities found by vector
+            keywords = [word.strip().lower() for word in query_text.split() if len(word.strip()) > 3]
+            
+            if keywords:
+                # Search using text-based query
+                search_conditions = []
+                params = {}
+                
+                for i, keyword in enumerate(keywords[:3]):  # Limit to 3 keywords
+                    param_name = f"keyword{i}"
+                    search_conditions.append(f"toLower(e.name) CONTAINS ${param_name}")
+                    params[param_name] = keyword
+                
+                search_query = f"""
+                MATCH (e:Entity)
+                WHERE {" OR ".join(search_conditions)}
+                RETURN e.name AS entity, 0.5 AS score
+                LIMIT 5
+                """
+                
+                similar_entities = self._neo4j.execute_query(search_query, params)
+                
+                if similar_entities:
+                    logger.info(f"Found {len(similar_entities)} entities by text search for query: {query_text}")
+                else:
+                    logger.warning(f"No entities found even by text search for query: {query_text}")
+                    return []
+        
+        if not similar_entities:
+            return []
+        
+        # Extract entity names
+        entity_names = [entity["entity"] for entity in similar_entities]
+        
+        # Query the graph to explore neighborhood
+        try:
+            # Simplified query that doesn't rely on APOC
+            query = f"""
+            MATCH (seed:Entity)
+            WHERE seed.name IN $entity_names
+            MATCH (s)-[r]->(o)
+            WHERE (s)-[*0..{hops}]-(seed) OR (o)-[*0..{hops}]-(seed)
+            RETURN DISTINCT
+                s.name AS subject,
+                r.name AS predicate,
+                type(r) AS predicate_type,
+                o.name AS object,
+                seed.name AS seed_entity,
+                CASE 
+                    WHEN (s)-[*0..1]-(seed) AND (o)-[*0..1]-(seed) THEN 3
+                    WHEN (s)-[*0..1]-(seed) OR (o)-[*0..1]-(seed) THEN 2
+                    ELSE 1
+                END AS relevance_score
+            ORDER BY relevance_score DESC
+            LIMIT $limit
+            """
+            
+            params = {
+                "entity_names": entity_names,
+                "limit": limit
+            }
+            
+            result = self._neo4j.execute_query(query, params)
+            
+            # Process results
+            return [
+                {
+                    "subject": record["subject"],
+                    "predicate": record.get("predicate") or record.get("predicate_type"),
+                    "object": record["object"],
+                    "seed_entity": record["seed_entity"],
+                    "relevance_score": record["relevance_score"],
+                    "source": "semantic"
+                }
+                for record in result
+            ]
+        except Exception as e:
+            logger.error(f"Error in semantic entity query with variable-length paths: {e}")
+            return await self._fallback_entity_neighborhood_query(entity_names, limit)
+    
+    async def _fallback_entity_neighborhood_query(self, entity_names: List[str], limit: int = 20):
+        """
+        Fallback query for entity neighborhood when complex queries fail
+        
+        Args:
+            entity_names: List of seed entity names
+            limit: Maximum number of results
+            
+        Returns:
+            List of simple neighborhood triplets
+        """
+        query = """
+        MATCH (seed:Entity)-[r1]-(mid)
+        WHERE seed.name IN $entity_names
+        RETURN DISTINCT
+            seed.name AS subject,
+            type(r1) AS predicate_type,
+            r1.name AS predicate,
+            mid.name AS object,
+            seed.name AS seed_entity,
+            1 AS relevance_score
+        LIMIT $limit
+        """
+        
+        params = {
+            "entity_names": entity_names,
+            "limit": limit
+        }
+        
+        result = self._neo4j.execute_query(query, params)
+        
+        return [
+            {
+                "subject": record["subject"],
+                "predicate": record.get("predicate") or record.get("predicate_type"),
+                "object": record["object"],
+                "seed_entity": record["seed_entity"],
+                "relevance_score": record["relevance_score"],
+                "source": "semantic_fallback"
+            }
+            for record in result
+        ]
+        
     async def _perform_semantic_search(
         self,
         query_text: str,
+        query_embedding: List[float],
         num_results: int = 10,
         similarity_threshold: float = 0.7
     ) -> List[Dict[str, Any]]:
@@ -449,64 +416,26 @@ class GraphRAG:
         
         Args:
             query_text: The query text
+            query_embedding: The query embedding vector
             num_results: Maximum number of results
             similarity_threshold: Minimum similarity score
             
         Returns:
             List of matching triplets
         """
-        # Generate embedding for the query
-        query_embedding = self._embedder.embed_query(query_text)
-        
-        # Perform semantic search
-        semantic_entities = await self._neo4j.semantic_search(
+        # Use semantic entity query to search with vectors
+        results = await self._semantic_entity_query(
+            query_text=query_text,
             query_embedding=query_embedding,
             limit=num_results,
             similarity_threshold=similarity_threshold
         )
         
-        # If no entities found, return empty list
-        if not semantic_entities:
-            return []
-        
-        # Get top matching entities
-        top_entities = [entity["entity"] for entity in semantic_entities]
-        
-        # Get triplets for these entities
-        results = []
-        for entity in top_entities:
-            # Query as subject
-            subject_triplets = await self._neo4j.query_knowledge_graph(
-                subject=entity,
-                limit=num_results,
-                exact_match=True
-            )
+        # Sort results by relevance (if available)
+        if results:
+            results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
             
-            # Query as object
-            object_triplets = await self._neo4j.query_knowledge_graph(
-                object=entity,
-                limit=num_results,
-                exact_match=True
-            )
-            
-            # Add to results
-            results.extend(subject_triplets)
-            results.extend(object_triplets)
-        
-        # Deduplicate by triplet_id and limit results
-        seen_ids = set()
-        deduplicated_results = []
-        
-        for result in results:
-            triplet_id = result.get("triplet_id")
-            if triplet_id not in seen_ids:
-                seen_ids.add(triplet_id)
-                deduplicated_results.append(result)
-                
-                if len(deduplicated_results) >= num_results:
-                    break
-        
-        return deduplicated_results
+        return results
     
     async def _perform_structured_search(
         self,
@@ -514,7 +443,7 @@ class GraphRAG:
         num_results: int = 10
     ) -> List[Dict[str, Any]]:
         """
-        Perform structured search using extracted entities
+        Perform structured search using text patterns
         
         Args:
             query_text: The query text
@@ -523,77 +452,34 @@ class GraphRAG:
         Returns:
             List of matching triplets
         """
-        # Extract entities and potential relations from the query
-        query_triplets = await self._extractor.extract_triplets(query_text)
-        
-        # If no entities found in query, try more general search
-        if not query_triplets:
-            # Try direct keyword search (non-exact match)
-            words = [w for w in query_text.split() if len(w) > 3]
-            results = []
-            
-            for word in words:
-                # Search for word as subject or object
-                subject_results = await self._neo4j.query_knowledge_graph(
-                    subject=word,
-                    limit=num_results // 2,
-                    exact_match=False
-                )
-                
-                object_results = await self._neo4j.query_knowledge_graph(
-                    object=word,
-                    limit=num_results // 2,
-                    exact_match=False
-                )
-                
-                results.extend(subject_results)
-                results.extend(object_results)
-                
-                if len(results) >= num_results:
-                    break
-            
-            return results[:num_results]
-        
-        # Use the extracted entities for search
+        # Try direct keyword search (non-exact match)
+        words = [w for w in query_text.split() if len(w) > 3]
         results = []
         
-        # Search for triplets matching query entities
-        for triplet in query_triplets:
-            # Search by subject
-            if triplet.subject:
-                subject_results = await self._neo4j.query_knowledge_graph(
-                    subject=triplet.subject,
-                    predicate=triplet.predicate if triplet.predicate else None,
-                    object=triplet.object if triplet.object else None,
-                    limit=num_results,
-                    exact_match=False
-                )
-                results.extend(subject_results)
+        for word in words:
+            # Search for word as subject or object
+            subject_results = self._neo4j.query_knowledge_graph(
+                subject=word,
+                limit=num_results // 2
+            )
             
-            # Search by object
-            elif triplet.object:
-                object_results = await self._neo4j.query_knowledge_graph(
-                    object=triplet.object,
-                    predicate=triplet.predicate if triplet.predicate else None,
-                    limit=num_results,
-                    exact_match=False
-                )
-                results.extend(object_results)
+            object_results = self._neo4j.query_knowledge_graph(
+                object_entity=word,
+                limit=num_results // 2
+            )
+            
+            # Add source information
+            for result in subject_results + object_results:
+                result["source"] = "structured"
+                result["relevance_score"] = 0.8  # Default score for structured search
+            
+            results.extend(subject_results)
+            results.extend(object_results)
+            
+            if len(results) >= num_results:
+                break
         
-        # Deduplicate and limit results
-        seen_ids = set()
-        deduplicated_results = []
-        
-        for result in results:
-            triplet_id = result.get("triplet_id")
-            if triplet_id not in seen_ids:
-                seen_ids.add(triplet_id)
-                deduplicated_results.append(result)
-                
-                if len(deduplicated_results) >= num_results:
-                    break
-        
-        return deduplicated_results
+        return results[:num_results]
     
     def _combine_search_results(
         self,
@@ -612,90 +498,31 @@ class GraphRAG:
         Returns:
             Combined and ranked results
         """
+        # Create a unique identifier for each triplet
+        def create_triplet_id(triplet):
+            subj = triplet.get("subject", "")
+            pred = triplet.get("predicate", "")
+            obj = triplet.get("object", "")
+            return f"{subj}|{pred}|{obj}"
+        
         # Create a map of triplet_id to result for deduplication
         combined_map = {}
         
         # Add semantic results with higher priority
         for result in semantic_results:
-            triplet_id = result.get("triplet_id")
+            triplet_id = create_triplet_id(result)
             if triplet_id and triplet_id not in combined_map:
-                # Add source info for debugging/analytics
-                result["source"] = "semantic"
                 combined_map[triplet_id] = result
         
         # Add structured results
         for result in structured_results:
-            triplet_id = result.get("triplet_id")
+            triplet_id = create_triplet_id(result)
             if triplet_id and triplet_id not in combined_map:
-                # Add source info for debugging/analytics
-                result["source"] = "structured"
                 combined_map[triplet_id] = result
         
-        # Convert back to list and sort by confidence
+        # Convert back to list and sort by relevance score
         combined_results = list(combined_map.values())
-        combined_results.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+        combined_results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
         
         # Limit results
-        return combined_results[:num_results]
-    
-    def _split_text(
-        self,
-        text: str,
-        chunk_size: int = 1000,
-        chunk_overlap: int = 100
-    ) -> List[str]:
-        """
-        Split text into chunks with overlap
-        
-        Args:
-            text: Text to split
-            chunk_size: Maximum size of each chunk
-            chunk_overlap: Overlap between chunks
-            
-        Returns:
-            List of text chunks
-        """
-        # Handle edge cases
-        if not text:
-            return []
-            
-        if len(text) <= chunk_size:
-            return [text]
-        
-        # Split text into chunks with respect to paragraph boundaries if possible
-        chunks = []
-        start = 0
-        
-        while start < len(text):
-            # Find the end of the chunk
-            end = min(start + chunk_size, len(text))
-            
-            # Try to end at paragraph boundary if possible
-            if end < len(text):
-                # Look for paragraph breaks
-                paragraph_break = max(
-                    text.rfind("\n\n", start, end),
-                    text.rfind("\r\n\r\n", start, end)
-                )
-                
-                # If found, use it as the end
-                if paragraph_break > start + chunk_size // 2:
-                    end = paragraph_break + 2
-                else:
-                    # Otherwise look for sentence boundary
-                    sentence_breaks = [text.rfind(". ", start, end),
-                                     text.rfind("? ", start, end),
-                                     text.rfind("! ", start, end),
-                                     text.rfind(".\n", start, end)]
-                    sentence_break = max(sentence_breaks)
-                    
-                    if sentence_break > start + chunk_size // 2:
-                        end = sentence_break + 2
-            
-            # Add the chunk
-            chunks.append(text[start:end])
-            
-            # Move to next chunk, respecting overlap
-            start = max(start + 1, end - chunk_overlap)
-        
-        return chunks 
+        return combined_results[:num_results] 

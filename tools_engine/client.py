@@ -1,5 +1,11 @@
 import logging
 import grpc
+import os
+import tempfile
+import subprocess
+import json
+import time
+from typing import Dict, Any, List, Optional, Union
 
 # Import the generated gRPC code
 # Note: These imports will work after running generate_protos.py
@@ -9,6 +15,7 @@ import grpc
 # For now, use placeholders
 TextProcessingServiceStub = object
 DataTransformationServiceStub = object
+SpeechProcessingServiceStub = object
 
 from app.core.config import settings
 
@@ -22,6 +29,7 @@ class ToolsClient:
         self.channel = None
         self.text_processing_stub = None
         self.data_transformation_stub = None
+        self.speech_processing_stub = None
         self._connect()
     
     def _connect(self):
@@ -32,6 +40,7 @@ class ToolsClient:
         # Create service stubs
         self.text_processing_stub = TextProcessingServiceStub(self.channel)
         self.data_transformation_stub = DataTransformationServiceStub(self.channel)
+        self.speech_processing_stub = SpeechProcessingServiceStub(self.channel)
         
         logger.info(f"Connected to gRPC server at {server_address}")
     
@@ -41,7 +50,7 @@ class ToolsClient:
             self.channel.close()
             logger.info("Closed gRPC channel")
     
-    def extract_text_from_image(self, image_data, image_format="jpeg", enhance_image=False):
+    def extract_text_from_image(self, image_data: bytes, image_format: str = "jpeg", enhance_image: bool = False) -> Dict[str, Any]:
         """
         Extract text from an image using OCR
         
@@ -80,7 +89,7 @@ class ToolsClient:
                 "confidence_score": 0.0
             }
     
-    def convert_pdf_to_text(self, pdf_data, start_page=0, end_page=-1, extract_tables=False):
+    def convert_pdf_to_text(self, pdf_data: bytes, start_page: int = 0, end_page: int = -1, extract_tables: bool = False) -> Dict[str, Any]:
         """
         Convert PDF to text
         
@@ -121,7 +130,7 @@ class ToolsClient:
                 "table_data": []
             }
     
-    def convert_data_format(self, input_data, input_format, output_format, options=None):
+    def convert_data_format(self, input_data: str, input_format: str, output_format: str, options: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """
         Convert data between formats
         
@@ -160,7 +169,7 @@ class ToolsClient:
                 "error_message": str(e)
             }
     
-    def execute_python_script(self, script_content, input_data="", parameters=None):
+    def execute_python_script(self, script_content: str, input_data: str = "", parameters: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """
         Execute a Python script
         
@@ -197,6 +206,127 @@ class ToolsClient:
                 "success": False,
                 "error_message": str(e),
                 "execution_time": 0.0
+            }
+    
+    def transcribe_speech(self, audio_data: bytes, audio_format: str = "wav", 
+                         language_code: str = "en-US", enhanced_model: bool = False,
+                         sample_rate_hertz: int = 16000, 
+                         phrases: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Transcribe audio to text using Google Cloud Speech-to-Text
+        
+        Args:
+            audio_data: Binary audio data
+            audio_format: Audio format (wav, mp3, ogg, etc.)
+            language_code: Language code (en-US, fr-FR, etc.)
+            enhanced_model: Whether to use an enhanced recognition model
+            sample_rate_hertz: Audio sample rate in Hertz
+            phrases: List of phrases to boost recognition accuracy
+            
+        Returns:
+            dict: Transcription and metadata
+        """
+        try:
+            # In a real implementation, you would create the appropriate request
+            # request = SpeechTranscriptionRequest(
+            #     audio_data=audio_data,
+            #     audio_format=audio_format,
+            #     language_code=language_code,
+            #     enhanced_model=enhanced_model,
+            #     sample_rate_hertz=sample_rate_hertz,
+            #     phrases=phrases or []
+            # )
+            # response = self.speech_processing_stub.TranscribeSpeech(request)
+            
+            # For now, return a mock response
+            response = {
+                "transcript": "Placeholder speech transcription",
+                "success": True,
+                "error_message": "",
+                "confidence_score": 0.92,
+                "alternatives": [
+                    {"transcript": "Placeholder speech transcription", "confidence": 0.92},
+                    {"transcript": "Place holder speech transcription", "confidence": 0.85}
+                ],
+                "duration_seconds": 5.2
+            }
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error transcribing speech: {str(e)}")
+            return {
+                "transcript": "",
+                "success": False,
+                "error_message": str(e),
+                "confidence_score": 0.0,
+                "alternatives": [],
+                "duration_seconds": 0.0
+            }
+    
+    def execute_python_file(self, file_path: str, input_data: str = "", 
+                           arguments: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Execute a Python file from a local path
+        
+        Args:
+            file_path: Path to the Python file
+            input_data: Input data to pass to the script's stdin
+            arguments: Command line arguments to pass to the script
+            
+        Returns:
+            dict: Script output and execution info
+        """
+        try:
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"Python file not found: {file_path}")
+            
+            # Build the command
+            cmd = ["python", file_path]
+            if arguments:
+                cmd.extend(arguments)
+            
+            # Execute the script in a subprocess
+            start_time = time.time()
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE if input_data else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            # Provide input if needed
+            stdout, stderr = process.communicate(input=input_data)
+            
+            execution_time = time.time() - start_time
+            
+            # Check if the command executed successfully
+            if process.returncode != 0:
+                logger.error(f"Error executing Python file: {stderr}")
+                return {
+                    "output_data": stdout,
+                    "success": False,
+                    "error_message": stderr,
+                    "execution_time": execution_time,
+                    "return_code": process.returncode
+                }
+            
+            return {
+                "output_data": stdout,
+                "success": True,
+                "error_message": stderr if stderr else "",
+                "execution_time": execution_time,
+                "return_code": process.returncode
+            }
+            
+        except Exception as e:
+            logger.error(f"Error executing Python file: {str(e)}")
+            return {
+                "output_data": "",
+                "success": False,
+                "error_message": str(e),
+                "execution_time": 0.0,
+                "return_code": -1
             }
 
 # Singleton instance
