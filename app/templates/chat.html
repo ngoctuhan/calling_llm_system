@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Call Center Information System</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/css/chat.css') }}">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Call Center Information System</h1>
+            <p>Ask questions about our products, services, and database</p>
+        </div>
+    </header>
+    
+    <div class="container">
+        <div class="chat-container">
+            <div class="chat-window">
+                <div class="chat-header">
+                    Chat
+                </div>
+                <div id="chat-messages">
+                    <!-- Messages will be added here dynamically -->
+                </div>
+                <div class="chat-input">
+                    <form id="chat-form">
+                        <div class="mode-select-container">
+                            <label for="mode-select">Mode:</label>
+                            <select id="mode-select" name="mode">
+                                <option value="knowledgebase">Knowledge Base</option>
+                                <option value="database">Database</option>
+                                <option value="hybrid">Hybrid (Both)</option>
+                            </select>
+                        </div>
+                        <div class="input-group">
+                            <input type="text" id="question-input" name="question" placeholder="Type your question here..." autocomplete="off" required>
+                            <button type="submit" id="submit-button">Send</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            <div class="thinking-window">
+                <div class="thinking-header">
+                    Thinking Process
+                </div>
+                <div id="thinking-steps">
+                    <!-- Thinking steps will be added here dynamically -->
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="{{ url_for('static', path='/js/chat.js') }}"></script>
+</body>
+</html> 

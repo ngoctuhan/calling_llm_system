@@ -67,6 +67,19 @@ class BaseChunker(DataChunker):
 class TextChunker(BaseChunker):
     """Chunker for general text documents."""
     
+    def __init__(self, min_chunk_size=500, max_chunk_size=1500, chunk_overlap=100):
+        """
+        Initialize the text chunker.
+        
+        Args:
+            min_chunk_size: Minimum size of chunks
+            max_chunk_size: Maximum size of chunks
+            chunk_overlap: Number of characters to overlap between chunks
+        """
+        self.min_chunk_size = min_chunk_size
+        self.max_chunk_size = max_chunk_size
+        self.chunk_overlap = chunk_overlap
+    
     def chunk(self, text: str, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Split text into chunks with metadata.
@@ -89,56 +102,86 @@ class TextChunker(BaseChunker):
         
         current_chunk = ""
         current_chunk_index = 0
+        total_text = ""
         
         for paragraph in paragraphs:
-            # If adding this paragraph exceeds the chunk size and we already have content,
-            # save the current chunk and start a new one
-            if current_chunk and len(current_chunk) + len(paragraph) > self.chunk_size:
-                # Create metadata for this chunk
-                chunk_metadata = self._get_base_metadata(metadata, current_chunk_index)
-                
-                # Add text range information
-                start_idx = len("".join(paragraphs[:current_chunk_index]))
-                end_idx = start_idx + len(current_chunk)
-                chunk_metadata.update({
-                    'text_range': {
-                        'start': start_idx,
-                        'end': end_idx
-                    }
-                })
-                
-                # Save the chunk
-                chunks.append({
-                    'text': current_chunk,
-                    'metadata': chunk_metadata
-                })
-                
-                # Start a new chunk with overlap if possible
-                if self.chunk_overlap > 0 and len(current_chunk) > self.chunk_overlap:
-                    # Get the last part of the previous chunk as overlap
-                    current_chunk = current_chunk[-self.chunk_overlap:]
-                else:
-                    current_chunk = ""
-                
-                current_chunk_index += 1
+            # Split paragraph into sentences
+            sentences = re.split(r'(?<=[.!?])\s+', paragraph.strip())
+            paragraph_with_sentences = []
             
-            # Add the paragraph to the current chunk
-            if current_chunk:
+            for sentence in sentences:
+                if sentence:
+                    paragraph_with_sentences.append(sentence)
+            
+            # Try to add each sentence to the current chunk
+            for sentence in paragraph_with_sentences:
+                potential_addition = current_chunk + ("\n\n" if current_chunk else "") + sentence
+                
+                # If adding this sentence exceeds the max size and we have at least the minimum content,
+                # save the current chunk and start a new one
+                if (len(current_chunk) >= self.min_chunk_size and 
+                    len(potential_addition) > self.max_chunk_size):
+                    
+                    # Create metadata for this chunk
+                    chunk_metadata = self._get_base_metadata(metadata, current_chunk_index)
+                    
+                    # Add text range information
+                    start_idx = len(total_text)
+                    end_idx = start_idx + len(current_chunk)
+                    chunk_metadata.update({
+                        'text_range_start': start_idx,
+                        "text_range_end": end_idx
+                    })
+                    
+                    # Save the chunk
+                    chunks.append({
+                        'text': current_chunk,
+                        'metadata': chunk_metadata
+                    })
+                    
+                    # Update total text
+                    total_text += current_chunk
+                    
+                    # Start a new chunk with overlap if possible
+                    if self.chunk_overlap > 0 and len(current_chunk) > self.chunk_overlap:
+                        # Find the last sentence boundary within the overlap region
+                        overlap_text = current_chunk[-self.chunk_overlap:]
+                        sentence_boundaries = list(re.finditer(r'(?<=[.!?])\s+', overlap_text))
+                        
+                        if sentence_boundaries:
+                            # Find the last complete sentence in the overlap
+                            last_boundary = sentence_boundaries[-1].end()
+                            current_chunk = overlap_text[last_boundary:]
+                        else:
+                            # If no sentence boundary in overlap, take the whole overlap
+                            current_chunk = overlap_text
+                    else:
+                        current_chunk = ""
+                    
+                    current_chunk_index += 1
+                
+                # Add the sentence to the current chunk
+                if current_chunk and not current_chunk.endswith("\n\n"):
+                    if sentence != paragraph_with_sentences[0]:
+                        current_chunk += " "
+                    else:
+                        current_chunk += "\n\n"
+                current_chunk += sentence
+            
+            # Add paragraph break if not at the end of text
+            if paragraphs.index(paragraph) < len(paragraphs) - 1 and current_chunk:
                 current_chunk += "\n\n"
-            current_chunk += paragraph
         
         # Don't forget the last chunk
         if current_chunk:
             chunk_metadata = self._get_base_metadata(metadata, current_chunk_index)
             
             # Add text range information
-            start_idx = len("".join(paragraphs[:current_chunk_index]))
+            start_idx = len(total_text)
             end_idx = start_idx + len(current_chunk)
             chunk_metadata.update({
-                'text_range': {
-                    'start': start_idx,
-                    'end': end_idx
-                }
+                'text_range_start': start_idx,
+                "text_range_end": end_idx
             })
             
             chunks.append({
@@ -326,4 +369,6 @@ class SlideDeckChunker(BaseChunker):
                 logger.error(f"Error chunking slide data: {str(e)}")
                 return []
         
-        return chunks 
+        return chunks
+
+

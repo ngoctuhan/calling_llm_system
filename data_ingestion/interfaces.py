@@ -36,6 +36,11 @@ class DataSourceReader(ABC):
         """
         pass
 
+    @abstractmethod
+    def get_text(self, text: str) -> str:
+        """Post-process the text."""
+        pass
+
 
 class DataProcessor(ABC):
     """Abstract interface for processing raw data into text."""
@@ -54,6 +59,7 @@ class DataProcessor(ABC):
         """
         pass
 
+    
 
 class DataChunker(ABC):
     """Abstract interface for chunking processed text data."""

@@ -298,9 +298,9 @@ class PostgresConnector(DBConnector):
         # Normalize the query for easier checking
         normalized_query = query.strip().upper()
         
-        # Only allow SELECT statements
-        if not normalized_query.startswith("SELECT "):
-            return False, "Only SELECT queries are allowed"
+        # # Only allow SELECT statements
+        # if not normalized_query.startswith("SELECT "):
+        #     return False, "Only SELECT queries are allowed"
         
         # Check for potentially harmful operations
         dangerous_keywords = [

@@ -362,6 +362,7 @@ class Text2SQL:
             # Step 3: Generate SQL
             sql_query = await self.generate_sql(query, schema, relevant_tables, similar_queries)
             
+            print(f"Generated SQL: {sql_query}")
             # Step 4: Execute the query directly without validation
             execution_success, execution_result = self.db_connector.execute_query(sql_query)
             execution_error = None if execution_success else execution_result

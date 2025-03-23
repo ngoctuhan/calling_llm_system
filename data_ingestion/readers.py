@@ -6,316 +6,200 @@ import logging
 from typing import Dict, Any, BinaryIO
 from pathlib import Path
 from datetime import datetime
-
+import chardet
 from .interfaces import DataSourceReader
 
 logger = logging.getLogger(__name__)
 
 
-class BaseReader(DataSourceReader):
-    """Base implementation for data source readers."""
+class CloudStorageReader(DataSourceReader):
+    """Reader for cloud storage."""
+    
+    def __init__(self, credentials: Dict[str, Any]):
+        """Initialize the reader with credentials."""
+        self.credentials = credentials
+    
+    def _download_resource(self, source_path: str) -> bytes:
+        """Download the resource from cloud storage."""
+        pass
+
+    def read(self, source_path: str) -> bytes:
+        """Read data from cloud storage."""
+        pass
+
+    def get_metadata(self, source_path: str) -> Dict[str, Any]:
+        """Get metadata for the resource."""
+        pass
+
+    def get_text(self, text: str) -> str:
+        """Post-process the text."""
+        pass
+
+
+import requests
+from bs4 import BeautifulSoup
+
+
+class CMSReader(CloudStorageReader):
+    """Reader for Content Management Systems (websites)."""
+    
+    def __init__(self, credentials: Dict[str, Any] = None):
+        """Initialize the reader with optional credentials for authenticated sites."""
+        super().__init__(credentials or {})
+        self.session = requests.Session()
+        if credentials:
+            # Setup authentication if credentials are provided
+            # This could include setting cookies, headers, etc.
+            pass
     
     def read(self, source_path: str) -> bytes:
         """
-        Read binary data from a local file source.
+        Read data from a website URL.
         
         Args:
-            source_path: Path to the data source
+            source_path: The URL of the webpage to fetch
             
         Returns:
-            Raw binary data from the source
+            The raw HTML content as bytes
         """
         try:
-            with open(source_path, 'rb') as f:
-                return f.read()
-        except Exception as e:
-            logger.error(f"Error reading {source_path}: {str(e)}")
+            response = self.session.get(source_path, timeout=30)
+            response.raise_for_status()  # Raise exception for 4XX/5XX responses
+            return response.content
+        except requests.RequestException as e:
+            logger.error(f"Error fetching content from {source_path}: {e}")
             raise
     
-    def get_metadata(self, source_path: str) -> Dict[str, Any]:
+    def get_text(self, html_content: bytes or str, target_tags=None) -> str:
         """
-        Extract basic metadata from the data source.
+        Extract readable text content from HTML using BeautifulSoup, keeping only text 
+        from specified tags.
         
         Args:
-            source_path: Path to the data source
+            html_content: HTML content either as bytes or string
+            target_tags: List of HTML tags to extract text from (e.g., ['div', 'p', 'ul', 'table'])
+                         If None, extracts text from all tags (default behavior)
             
         Returns:
-            Dictionary containing metadata
+            Cleaned text with HTML tags and links removed
         """
-        try:
-            path = Path(source_path)
-            stats = path.stat()
-            
-            return {
-                'filename': path.name,
-                'file_path': str(path.absolute()),
-                'file_extension': path.suffix.lower(),
-                'size_bytes': stats.st_size,
-                'creation_time': datetime.fromtimestamp(stats.st_ctime).isoformat(),
-                'modification_time': datetime.fromtimestamp(stats.st_mtime).isoformat(),
-                'content_type': self._get_content_type(path.suffix.lower()),
-                'source_type': 'local_file'
-            }
-        except Exception as e:
-            logger.error(f"Error getting metadata for {source_path}: {str(e)}")
-            return {
-                'filename': os.path.basename(source_path),
-                'file_path': source_path,
-                'file_extension': os.path.splitext(source_path)[1].lower(),
-                'error': str(e),
-                'source_type': 'local_file'
-            }
-    
-    def _get_content_type(self, extension: str) -> str:
-        """Get content type based on file extension."""
-        mapping = {
-            '.pdf': 'document',
-            '.docx': 'document',
-            '.doc': 'document',
-            '.txt': 'text',
-            '.md': 'text',
-            '.xlsx': 'spreadsheet',
-            '.xls': 'spreadsheet',
-            '.csv': 'table',
-            '.pptx': 'presentation',
-            '.ppt': 'presentation',
-            '.mp3': 'audio',
-            '.wav': 'audio',
-            '.m4a': 'audio',
-            '.ogg': 'audio'
-        }
-        return mapping.get(extension, 'unknown')
-
-
-class PDFReader(BaseReader):
-    """Reader for PDF files."""
-    
-    def get_metadata(self, source_path: str) -> Dict[str, Any]:
-        metadata = super().get_metadata(source_path)
-        metadata['content_type'] = 'document'
-        
-        # Add PDF-specific metadata
-        # In a real implementation, you would use a library like PyPDF2 or pdfminer
-        # to extract more PDF-specific metadata
-        
-        return metadata
-
-
-class ExcelReader(BaseReader):
-    """Reader for Excel and CSV files."""
-    
-    def get_metadata(self, source_path: str) -> Dict[str, Any]:
-        metadata = super().get_metadata(source_path)
-        
-        ext = Path(source_path).suffix.lower()
-        if ext == '.csv':
-            metadata['content_type'] = 'table'
+        if isinstance(html_content, bytes):
+            # Detect encoding
+            encoding = 'utf-8'
+            html_text = html_content.decode(encoding, errors='replace')
         else:
-            metadata['content_type'] = 'spreadsheet'
+            html_text = html_content
             
-        # In a real implementation, you would use openpyxl or pandas
-        # to extract more Excel-specific metadata like sheet names
+        # Parse HTML
+        soup = BeautifulSoup(html_text, 'html.parser')
         
-        return metadata
-
-
-class PowerPointReader(BaseReader):
-    """Reader for PowerPoint files."""
+        # Remove script, style, and navigation elements
+        for element in soup(['script', 'style', 'header', 'footer', 'nav', 'aside']):
+            element.decompose()
+        
+        # Add spacing between block elements to prevent text from sticking together
+        for tag in soup.find_all(['div', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'tr']):
+            if tag.string:
+                tag.string.replace_with(tag.string + " ")
+        
+        if target_tags:
+            # Extract text only from specified tags
+            extracted_text = []
+            
+            for tag_name in target_tags:
+                for tag in soup.find_all(tag_name):
+                    # Replace images with simple placeholder
+                    for img in tag.find_all('img'):
+                        img.replace_with(' ')
+                    
+                    # Keep only the text from links (remove URLs)
+                    for a in tag.find_all('a'):
+                        a.replace_with(a.get_text())
+                    
+                    # Get text from this tag
+                    tag_text = tag.get_text()
+                    if tag_text.strip():
+                        extracted_text.append(tag_text)
+            
+            # Join extracted texts
+            text = '\n\n'.join(extracted_text)
+        else:
+            # Original behavior - extract text from all tags
+            # Replace images with simple placeholder
+            for img in soup.find_all('img'):
+                img.replace_with(' ')
+            
+            # Keep only the text from links (remove URLs)
+            for a in soup.find_all('a'):
+                a.replace_with(a.get_text())
+            
+            # Get text
+            text = soup.get_text()
+        
+        # Better whitespace cleaning
+        # First normalize all whitespace
+        text = ' '.join(text.split())
+        
+        # Restore proper paragraph breaks
+        text = text.replace('. ', '.\n')
+        
+        # Fix spacing between sentences
+        text = text.replace('.\n', '.\n\n')
+        text = text.replace('!\n', '!\n\n')
+        text = text.replace('?\n', '?\n\n')
+        
+        # Cleanup any remaining whitespace issues
+        lines = [line.strip() for line in text.splitlines()]
+        text = '\n\n'.join(line for line in lines if line)
+        
+        return text
     
     def get_metadata(self, source_path: str) -> Dict[str, Any]:
-        metadata = super().get_metadata(source_path)
-        metadata['content_type'] = 'presentation'
-        
-        # In a real implementation, you would use python-pptx
-        # to extract more PowerPoint-specific metadata
-        
-        return metadata
-
-
-class AudioReader(BaseReader):
-    """Reader for audio files."""
-    
-    def get_metadata(self, source_path: str) -> Dict[str, Any]:
-        metadata = super().get_metadata(source_path)
-        metadata['content_type'] = 'audio'
-        
-        # In a real implementation, you would use a library like pydub or librosa
-        # to extract more audio-specific metadata like duration, sample rate, etc.
-        
-        return metadata
-
-
-class TextReader(BaseReader):
-    """Reader for text files."""
-    
-    def get_metadata(self, source_path: str) -> Dict[str, Any]:
-        metadata = super().get_metadata(source_path)
-        metadata['content_type'] = 'text'
-        return metadata
-
-
-class CloudStorageReader(DataSourceReader):
-    """Base class for cloud storage readers."""
-    
-    def read(self, source_path: str) -> bytes:
         """
-        Read binary data from a cloud storage source.
+        Extract metadata from the webpage using BeautifulSoup.
         
         Args:
-            source_path: URI to the data source
-            
-        Returns:
-            Raw binary data from the source
-        """
-        raise NotImplementedError("Subclasses must implement this method")
-    
-    def get_metadata(self, source_path: str) -> Dict[str, Any]:
-        """
-        Extract metadata from a cloud storage source.
-        
-        Args:
-            source_path: URI to the data source
-            
-        Returns:
-            Dictionary containing metadata
-        """
-        raise NotImplementedError("Subclasses must implement this method")
-
-
-class SharePointReader(CloudStorageReader):
-    """Reader for SharePoint files."""
-    
-    def read(self, source_path: str) -> bytes:
-        """
-        Read binary data from a SharePoint document.
-        
-        Args:
-            source_path: SharePoint URI (sharepoint://site/library/path/to/file)
-            
-        Returns:
-            Raw binary data from the source
-        """
-        # In a real implementation, you would use the Office 365 REST API
-        # or Microsoft Graph API to download the file
-        logger.info(f"Reading SharePoint document: {source_path}")
-        
-        # Placeholder implementation
-        return b"SharePoint document content"
-    
-    def get_metadata(self, source_path: str) -> Dict[str, Any]:
-        """
-        Extract metadata from a SharePoint document.
-        
-        Args:
-            source_path: SharePoint URI
+            source_path: The URL of the webpage
             
         Returns:
             Dictionary containing metadata
         """
-        # Parse the URI to extract site, library, and file path
-        parts = source_path.replace('sharepoint://', '').split('/')
-        site = parts[0] if len(parts) > 0 else ""
-        library = parts[1] if len(parts) > 1 else ""
-        file_path = '/'.join(parts[2:]) if len(parts) > 2 else ""
+        html_content = self.read(source_path)
         
-        filename = file_path.split('/')[-1] if file_path else ""
-        file_extension = os.path.splitext(filename)[1].lower() if filename else ""
-        
-        return {
-            'filename': filename,
-            'file_path': source_path,
-            'file_extension': file_extension,
-            'content_type': self._get_content_type(file_extension),
-            'source_type': 'sharepoint',
-            'site': site,
-            'library': library,
-            'relative_path': file_path
-        }
-    
-    def _get_content_type(self, extension: str) -> str:
-        """Get content type based on file extension."""
-        # Reuse the mapping from BaseReader
-        mapping = {
-            '.pdf': 'document',
-            '.docx': 'document',
-            '.doc': 'document',
-            '.txt': 'text',
-            '.md': 'text',
-            '.xlsx': 'spreadsheet',
-            '.xls': 'spreadsheet',
-            '.csv': 'table',
-            '.pptx': 'presentation',
-            '.ppt': 'presentation',
-            '.mp3': 'audio',
-            '.wav': 'audio',
-            '.m4a': 'audio',
-            '.ogg': 'audio'
-        }
-        return mapping.get(extension, 'unknown')
-
-
-class OneDriveReader(CloudStorageReader):
-    """Reader for OneDrive files."""
-    
-    def read(self, source_path: str) -> bytes:
-        """
-        Read binary data from a OneDrive document.
-        
-        Args:
-            source_path: OneDrive URI (onedrive://path/to/file)
+        if isinstance(html_content, bytes):
+            # Detect encoding
+            detected = chardet.detect(html_content)
+            encoding = detected['encoding'] or 'utf-8'
+            html_text = html_content.decode(encoding, errors='replace')
+        else:
+            html_text = html_content
             
-        Returns:
-            Raw binary data from the source
-        """
-        # In a real implementation, you would use the Microsoft Graph API
-        # to download the file
-        logger.info(f"Reading OneDrive document: {source_path}")
+        soup = BeautifulSoup(html_text, 'html.parser')
         
-        # Placeholder implementation
-        return b"OneDrive document content"
-    
-    def get_metadata(self, source_path: str) -> Dict[str, Any]:
-        """
-        Extract metadata from a OneDrive document.
+        metadata = {
+            'url': source_path,
+            'fetch_time': datetime.now().isoformat()
+        }
         
-        Args:
-            source_path: OneDrive URI
+        # Extract title
+        title_tag = soup.find('title')
+        if title_tag:
+            metadata['title'] = title_tag.text.strip()
             
-        Returns:
-            Dictionary containing metadata
-        """
-        # Parse the URI to extract the file path
-        file_path = source_path.replace('onedrive://', '')
-        
-        filename = file_path.split('/')[-1] if file_path else ""
-        file_extension = os.path.splitext(filename)[1].lower() if filename else ""
-        
-        return {
-            'filename': filename,
-            'file_path': source_path,
-            'file_extension': file_extension,
-            'content_type': self._get_content_type(file_extension),
-            'source_type': 'onedrive',
-            'relative_path': file_path
-        }
-    
-    def _get_content_type(self, extension: str) -> str:
-        """Get content type based on file extension."""
-        # Reuse the mapping from BaseReader
-        mapping = {
-            '.pdf': 'document',
-            '.docx': 'document',
-            '.doc': 'document',
-            '.txt': 'text',
-            '.md': 'text',
-            '.xlsx': 'spreadsheet',
-            '.xls': 'spreadsheet',
-            '.csv': 'table',
-            '.pptx': 'presentation',
-            '.ppt': 'presentation',
-            '.mp3': 'audio',
-            '.wav': 'audio',
-            '.m4a': 'audio',
-            '.ogg': 'audio'
-        }
-        return mapping.get(extension, 'unknown') 
+        # Extract meta description
+        desc_tag = soup.find('meta', attrs={'name': 'description'})
+        if desc_tag:
+            metadata['description'] = desc_tag.get('content', '')
+            
+        # Extract Open Graph metadata
+        for meta in soup.find_all('meta', property=lambda x: x and x.startswith('og:')):
+            property_name = meta.get('property')[3:]  # Remove 'og:' prefix
+            if property_name:
+                metadata[f'og_{property_name}'] = meta.get('content', '')
+                
+        # Try to extract publish date
+        date_meta = soup.find('meta', property='article:published_time')
+        if date_meta:
+            metadata['published_date'] = date_meta.get('content', '')
+            
+        return metadata

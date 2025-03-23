@@ -46,23 +46,23 @@ async def main():
     # Sample queries for the e-commerce database
     sample_queries = [
         # Basic queries
-        # "Show me all products in the Electronics category",
+        "Show me all products in the Electronics category",
         "List the top 5 most expensive products",
-        # "How many customers do we have in each region?",
+        "How many customers do we have in each region?",
         
         # # Join queries
-        # "Show me all orders made by customer John Doe",
-        # "List products that have been ordered more than 3 times",
-        # "What are the total sales for each product category?",
+        "Show me all orders made by customer John Doe",
+        "List products that have been ordered more than 3 times",
+        "What are the total sales for each product category?",
         
         # # Analytical queries
-        # "Show me the average order value by region",
-        # "Which payment method is most commonly used?",
-        # "Find products with stock quantity less than 50",
+        "Show me the average order value by region",
+        "Which payment method is most commonly used?",
+        "Find products with stock quantity less than 50",
         
-        # # Complex queries
-        # "Who are our top 3 customers by total purchase amount?",
-        # "What is the percentage of orders that have been delivered vs pending?"
+        # Complex queries
+        "Who are our top 3 customers by total purchase amount?",
+        "What is the percentage of orders that have been delivered vs pending?"
     ]
     
     # Process each query individually

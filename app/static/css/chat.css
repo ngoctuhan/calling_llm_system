@@ -1,0 +1,270 @@
+/* Chat Styles for Call Center Information System */
+
+:root {
+    --primary-color: #3498db;
+    --secondary-color: #2980b9;
+    --background-color: #f5f8fa;
+    --light-color: #ecf0f1;
+    --dark-color: #34495e;
+    --error-color: #e74c3c;
+    --success-color: #2ecc71;
+    --font-primary: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+body {
+    font-family: var(--font-primary);
+    background-color: var(--background-color);
+    margin: 0;
+    padding: 0;
+    color: var(--dark-color);
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+header {
+    padding: 20px 0;
+    text-align: center;
+    background-color: var(--primary-color);
+    color: white;
+    margin-bottom: 20px;
+    border-radius: 0 0 10px 10px;
+}
+
+header h1 {
+    margin: 0;
+    font-size: 1.8rem;
+}
+
+header p {
+    margin: 5px 0 0;
+    opacity: 0.8;
+}
+
+.chat-container {
+    display: flex;
+    height: calc(100vh - 220px);
+    background-color: white;
+    border-radius: 10px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+}
+
+.chat-window {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.thinking-window {
+    width: 300px;
+    background-color: var(--light-color);
+    border-left: 1px solid #ddd;
+    display: flex;
+    flex-direction: column;
+    transition: width 0.3s ease;
+}
+
+.thinking-header {
+    padding: 15px;
+    background-color: var(--dark-color);
+    color: white;
+    text-align: center;
+    font-weight: bold;
+}
+
+#thinking-steps {
+    flex: 1;
+    overflow-y: auto;
+    padding: 15px;
+}
+
+.thinking-step {
+    margin-bottom: 10px;
+    padding: 10px;
+    background-color: white;
+    border-radius: 5px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    font-size: 0.9rem;
+}
+
+.thinking-step strong {
+    color: var(--primary-color);
+}
+
+.chat-header {
+    padding: 15px;
+    background-color: var(--primary-color);
+    color: white;
+    text-align: center;
+    font-weight: bold;
+}
+
+#chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 15px;
+}
+
+.message {
+    margin-bottom: 15px;
+    padding: 12px 15px;
+    border-radius: 10px;
+    max-width: 80%;
+    word-wrap: break-word;
+}
+
+.user-message {
+    background-color: var(--primary-color);
+    color: white;
+    align-self: flex-end;
+    margin-left: auto;
+}
+
+.bot-message {
+    background-color: var(--light-color);
+    color: var(--dark-color);
+    align-self: flex-start;
+}
+
+.error-message {
+    background-color: var(--error-color);
+    color: white;
+}
+
+.sources, .sql-info {
+    margin-top: 10px;
+    padding: 10px;
+    background-color: rgba(0, 0, 0, 0.05);
+    border-radius: 5px;
+    font-size: 0.85rem;
+}
+
+.sources h4, .sql-info h4 {
+    margin-top: 0;
+    margin-bottom: 5px;
+    color: var(--dark-color);
+}
+
+.sources ul {
+    padding-left: 20px;
+    margin: 5px 0;
+}
+
+.sql-info pre {
+    background-color: #f8f9fa;
+    padding: 10px;
+    border-radius: 5px;
+    overflow-x: auto;
+    margin: 5px 0;
+    font-size: 0.85rem;
+    line-height: 1.4;
+}
+
+.sql-results {
+    overflow-x: auto;
+}
+
+.sql-results table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 5px;
+}
+
+.sql-results th, .sql-results td {
+    padding: 8px;
+    text-align: left;
+    border: 1px solid #ddd;
+}
+
+.sql-results th {
+    background-color: #f2f2f2;
+    font-weight: bold;
+}
+
+.sql-results tr:nth-child(even) {
+    background-color: #f8f8f8;
+}
+
+.chat-input {
+    padding: 15px;
+    border-top: 1px solid #ddd;
+    background-color: white;
+}
+
+#chat-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.input-group {
+    display: flex;
+    gap: 10px;
+}
+
+.mode-select-container {
+    margin-bottom: 10px;
+}
+
+#mode-select {
+    padding: 8px;
+    border-radius: 5px;
+    border: 1px solid #ddd;
+    background-color: white;
+    font-family: var(--font-primary);
+}
+
+#question-input {
+    flex: 1;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    font-family: var(--font-primary);
+    font-size: 1rem;
+}
+
+#submit-button {
+    padding: 12px 20px;
+    background-color: var(--primary-color);
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: background-color 0.3s;
+}
+
+#submit-button:hover {
+    background-color: var(--secondary-color);
+}
+
+#submit-button:disabled {
+    background-color: #ccc;
+    cursor: not-allowed;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .chat-container {
+        flex-direction: column;
+        height: auto;
+    }
+    
+    .thinking-window {
+        width: 100%;
+        border-left: none;
+        border-top: 1px solid #ddd;
+    }
+    
+    .chat-window, .thinking-window {
+        height: 50vh;
+    }
+    
+    .message {
+        max-width: 90%;
+    }
+} 
