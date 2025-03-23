@@ -110,6 +110,32 @@ graph_rag = RetrievalFactory.create_rag(
 )
 ```
 
+### Create Graph RAG v2 
+
+Graph RAG v2, it is update from version 1 about performances and workflow
+
+```python
+from retrieval_engine.knowledge_retrieval import RetrievalFactory, RAGType
+
+graph_rag = RetrievalFactory.create_rag(
+    rag_type=RAGType.GRAPH_V2,
+    llm_config={
+        "model_name": "gemini-2.0-flash",
+        "api_key": os.getenv("GOOGLE_API_KEY")
+    },
+    embedding_config={
+        "provider": "google",  
+        "model_name": "text-embedding-004",  
+        "api_key": os.getenv("GOOGLE_API_KEY")
+    },
+    retrieval_config={
+        "username": "neo4j",
+        "password": "password",
+        "url": "neo4j://localhost:7687",
+        "similarity_top_k": 10
+    }
+)
+```
 ### Creating Hybrid RAG
 
 Hybrid RAG combines Vector and Graph RAG approaches for improved retrieval:
@@ -117,52 +143,77 @@ Hybrid RAG combines Vector and Graph RAG approaches for improved retrieval:
 ```python
 from retrieval_engine.knowledge_retrieval import RetrievalFactory, RAGType
 
-hybrid_rag = RetrievalFactory.create_rag(
-    rag_type=RAGType.HYBRID,
+# Tạo Graph RAG v2
+graph_rag = RetrievalFactory.create_rag(
+    rag_type=RAGType.GRAPH_V2,
     llm_config={
-        "provider": "openai",
-        "model_name": "gpt-4",
-        "api_key": "your-openai-api-key"
+        "model_name": "gemini-2.0-flash",
+        "api_key": os.getenv("GOOGLE_API_KEY")
     },
     embedding_config={
-        "provider": "openai",
-        "model_name": "text-embedding-3-small",
-        "api_key": "your-openai-api-key"
+        "provider": "google",  
+        "model_name": "text-embedding-004",  
+        "api_key": os.getenv("GOOGLE_API_KEY")
     },
-    hybrid_config={
-        # Weights for combining results
-        "vector_weight": 0.6,
-        "graph_weight": 0.4,
-        # Combination strategy: weighted, ensemble, or cascade
-        "combination_strategy": "weighted",
-        # Control parallel execution
-        "max_workers": 2,
-        # Vector-specific configuration
-        "vector_config": {
-            "retrieval_config": {
-                "collection_name": "hybrid_documents",
-                "qdrant_host": "localhost"
-            }
-        },
-        # Graph-specific configuration
-        "graph_config": {
-            "retrieval_config": {
-                "username": "neo4j",
-                "password": "password",
-                "url": "neo4j://localhost:7687"
-            }
-        }
+    retrieval_config={
+        "username": "neo4j",
+        "password": "password",
+        "url": "neo4j://localhost:7687",
+        "similarity_top_k": 10
     }
 )
 
-# Retrieve with combined approaches (retrieval happens in parallel)
-results = hybrid_rag.retrieve(
-    query="How do chat systems work in call centers?",
-    top_k=5,
-    # Pass specific parameters to each RAG system
-    vector_kwargs={"filter_conditions": {"category": "chat"}},
-    graph_kwargs={"similarity_top_k": 15}
+# Tạo Vector RAG
+vector_rag = RetrievalFactory.create_rag(
+    rag_type=RAGType.VECTOR,
+    llm_config={
+        "model_name": "gemini-2.0-flash",
+        "api_key": os.getenv("GOOGLE_API_KEY")
+    },
+    embedding_config={
+        "provider": "huggingface",  
+        "model_name": "all-MiniLM-L6-v2",  
+    },
+    retrieval_config={
+        "index_name": "example_hf", 
+        "similarity_top_k": 10
+    }
 )
+
+# Tạo Hybrid RAG
+hybrid_rag = RetrievalFactory.create_rag(
+    rag_type=RAGType.HYBRID,
+    llm_config={
+        "model_name": "gemini-2.0-flash",
+        "api_key": os.getenv("GOOGLE_API_KEY")
+    },
+    retrieval_config={
+        "vector_rag": vector_rag,
+        "graph_rag": graph_rag,
+        "vector_weight": 0.6,
+        "graph_weight": 0.4,
+        "combination_strategy": "weighted",  # 'weighted', 'ensemble', hoặc 'cascade'
+        "deduplicate": True,
+        "max_workers": 2
+    }
+)
+
+print("\n=== Kết quả từ Graph RAG ===")
+graph_results = graph_rag.process("Nguyễn Trãi mất năm nào?", top_k=5)
+print(graph_results)
+
+print("\n=== Kết quả từ Vector RAG ===")
+vector_results = vector_rag.process("Nguyễn Trãi mất năm nào?", top_k=5)
+print(vector_results)
+
+print("\n=== Kết quả từ Hybrid RAG ===")
+hybrid_results = hybrid_rag.process("Nguyễn Trãi mất năm nào?", top_k=5)
+print(hybrid_results)
+
+# Đóng kết nối
+import asyncio
+asyncio.run(hybrid_rag.close())
+
 ```
 
 ## Configuration Options

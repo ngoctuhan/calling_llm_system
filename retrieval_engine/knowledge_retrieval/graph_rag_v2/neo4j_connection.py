@@ -332,6 +332,7 @@ class SimpleNeo4jConnection:
         # Build base query
         base_query = f"""
         MATCH (s:Entity)-[r]->(o:Entity)
+        WHERE type(r) <> 'FROM_DOCUMENT'
         {where_clause}
         """
         
@@ -343,17 +344,17 @@ class SimpleNeo4jConnection:
             if where_clause:
                 base_query = f"""
                 MATCH (s:Entity)-[r]->(o:Entity)
-                WHERE {where_clause[6:]} AND {predicate_condition}
+                WHERE type(r) <> 'FROM_DOCUMENT' AND {where_clause[6:]} AND {predicate_condition}
                 """
             else:
                 base_query = f"""
                 MATCH (s:Entity)-[r]->(o:Entity)
-                WHERE {predicate_condition}
+                WHERE type(r) <> 'FROM_DOCUMENT' AND {predicate_condition}
                 """
         
         query = base_query + """
         OPTIONAL MATCH (s)-[:FROM_DOCUMENT]->(d:Document)
-        RETURN 
+        RETURN DISTINCT
             s.name AS subject, 
             r.name AS predicate,
             type(r) AS predicate_type, 
@@ -396,8 +397,8 @@ class SimpleNeo4jConnection:
                 $query_embedding
             ) YIELD node, score
             WHERE score >= $threshold
-            RETURN node.name AS entity, score
-            ORDER BY score DESC
+            RETURN DISTINCT node.name AS entity, score
+            ORDER BY entity, score DESC
             """
             
             params = {
@@ -422,7 +423,7 @@ class SimpleNeo4jConnection:
             entities_query = """
             MATCH (e:Entity)
             WHERE e.embedding IS NOT NULL
-            RETURN e.name AS entity, e.embedding AS embedding
+            RETURN DISTINCT e.name AS entity, e.embedding AS embedding
             """
             
             entities_with_embeddings = self.execute_query(entities_query)
@@ -488,6 +489,9 @@ class SimpleNeo4jConnection:
                     if len(results) >= limit:
                         break
             
+            # Sort results by entity name, then by score
+            results = sorted(results, key=lambda x: (x["entity"], -x["score"]))
+            
             return results
             
         except ImportError:
@@ -498,7 +502,7 @@ class SimpleNeo4jConnection:
             entities_query = """
             MATCH (e:Entity)
             WHERE e.embedding IS NOT NULL
-            RETURN e.name AS entity, e.embedding AS embedding
+            RETURN DISTINCT e.name AS entity, e.embedding AS embedding
             """
             
             entities_with_embeddings = self.execute_query(entities_query)
@@ -524,7 +528,7 @@ class SimpleNeo4jConnection:
                     if score >= similarity_threshold:
                         results.append({"entity": entity, "score": score})
             
-            # Sort by score and limit results
-            results = sorted(results, key=lambda x: x["score"], reverse=True)[:limit]
+            # Sort by entity name, then by score
+            results = sorted(results, key=lambda x: (x["entity"], -x["score"]))[:limit]
             
             return results 

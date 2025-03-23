@@ -7,6 +7,11 @@ from retrieval_engine.knowledge_retrieval.vector_rag.vector_rag import VectorRAG
 from retrieval_engine.knowledge_retrieval.vector_rag.reranker import RerankMethod
 from retrieval_engine.knowledge_retrieval.graph_rag.graph_rag import GraphRAGQueryEngine
 from retrieval_engine.knowledge_retrieval.graph_rag.graph_builder import GraphRAGBuilder
+from retrieval_engine.knowledge_retrieval.graph_rag_v2 import GraphRAG
+from retrieval_engine.knowledge_retrieval.graph_rag_v2.graph_extractor import GraphExtractor
+from retrieval_engine.knowledge_retrieval.graph_rag_v2.neo4j_connection import SimpleNeo4jConnection
+from llm_services import LLMProviderFactory
+from retrieval_engine.knowledge_retrieval.graph_rag_v2.embeddings import create_embedding
 from retrieval_engine.knowledge_retrieval.hybrid_rag import HybridRAG
 
 logger = logging.getLogger(__name__)
@@ -15,6 +20,7 @@ class RAGType(Enum):
     """Enum for different types of RAG implementations"""
     VECTOR = "vector"
     GRAPH = "graph"
+    GRAPH_V2 = "graph_v2"
     HYBRID = "hybrid"
 
 class RetrievalFactory:
@@ -77,6 +83,13 @@ class RetrievalFactory:
             )
         elif rag_type == RAGType.GRAPH:
             return RetrievalFactory._create_graph_rag(
+                llm_config=llm_config,
+                embedding_config=embedding_config,
+                retrieval_config=retrieval_config,
+                **kwargs
+            )
+        elif rag_type == RAGType.GRAPH_V2:
+            return RetrievalFactory._create_graph_rag_v2(
                 llm_config=llm_config,
                 embedding_config=embedding_config,
                 retrieval_config=retrieval_config,
@@ -155,7 +168,7 @@ class RetrievalFactory:
         **kwargs
     ) -> GraphRAGQueryEngine:
         """
-        Create a Graph-based RAG system.
+        Create a Graph-based RAG system v1 - base on llama-index
         
         Args:
             llm_config: Configuration for the LLM
@@ -226,6 +239,73 @@ class RetrievalFactory:
         )
     
     @staticmethod
+    def _create_graph_rag_v2(
+        llm_config: Dict[str, Any],
+        embedding_config: Dict[str, Any],
+        retrieval_config: Dict[str, Any],
+        **kwargs
+    ) -> GraphRAG:
+        """
+        Create a Graph-based RAG system v2 - base on neo4j
+        """
+        # Extract LLM configuration
+        llm_model_name = llm_config.get("model_name")
+        llm_api_key = llm_config.get("api_key")
+        
+        # Extract embedding configuration
+        embedding_model_name = embedding_config.get("model_name")
+        embedding_api_key = embedding_config.get("api_key")
+        embedding_provider = embedding_config.get("provider", "openai")
+        
+        # Extract Neo4j configuration
+        neo4j_username = retrieval_config.get("username", "neo4j")
+        neo4j_password = retrieval_config.get("password", "password")
+        neo4j_url = retrieval_config.get("url", "neo4j://127.0.0.1:7687")
+        
+        # Extract retrieval parameters
+        semantic_search_limit = retrieval_config.get("semantic_search_limit", 10)
+        graph_search_limit = retrieval_config.get("graph_search_limit", 10)
+        hybrid_search = retrieval_config.get("hybrid_search", True)
+        similarity_threshold = retrieval_config.get("similarity_threshold", 0.7)
+        max_hops = retrieval_config.get("max_hops", 2)
+        
+        llm = LLMProviderFactory.create_provider(llm_model_name, 
+                                                 llm_api_key)
+
+        embedding_provider = create_embedding(
+            provider_type=embedding_provider,
+            model_name=embedding_model_name,
+            api_key=embedding_api_key,
+            cache=False
+        )
+
+        # Create graph extractor    
+        graph_extractor = GraphExtractor(
+            llm=llm,
+            embedding_provider=embedding_provider
+        )
+        
+        # Create Neo4j connection
+        neo4j_connection = SimpleNeo4jConnection(
+            uri=neo4j_url,
+            username=neo4j_username,
+            password=neo4j_password
+        )
+        
+        # Create GraphRAG
+        return GraphRAG(
+            graph_store=neo4j_connection,
+            graph_extractor=graph_extractor,
+            embedding_provider=embedding_provider,
+            hybrid_search=hybrid_search,
+            semantic_search_limit=semantic_search_limit,
+            graph_search_limit=graph_search_limit,
+            similarity_threshold=similarity_threshold,
+            max_hops=max_hops,
+            **kwargs
+        )
+
+    @staticmethod
     def _create_hybrid_rag(
         llm_config: Dict[str, Any],
         embedding_config: Dict[str, Any],
@@ -248,50 +328,14 @@ class RetrievalFactory:
             HybridRAG: The configured Hybrid RAG system
         """
         # Extract hybrid configuration
-        vector_weight = hybrid_config.get("vector_weight", 0.5)
-        graph_weight = hybrid_config.get("graph_weight", 0.5)
-        combination_strategy = hybrid_config.get("combination_strategy", "weighted")
-        deduplicate = hybrid_config.get("deduplicate", True)
-        max_workers = hybrid_config.get("max_workers", 2)
+        vector_weight = retrieval_config.get("vector_weight", 0.5)
+        graph_weight = retrieval_config.get("graph_weight", 0.5)
+        combination_strategy = retrieval_config.get("combination_strategy", "weighted")
+        deduplicate = retrieval_config.get("deduplicate", True)
+        max_workers = retrieval_config.get("max_workers", 2)
         
-        # Extract RAG sub-component configurations
-        vector_config = hybrid_config.get("vector_config", {})
-        graph_config = hybrid_config.get("graph_config", {})
-        
-        # Determine if we need to create vector RAG, graph RAG, or both
-        create_vector = hybrid_config.get("use_vector", True)
-        create_graph = hybrid_config.get("use_graph", True)
-        
-        # Create Vector RAG if needed
-        vector_rag = None
-        if create_vector:
-            # Merge main configs with vector-specific configs
-            vector_embedding_config = {**embedding_config, **vector_config.get("embedding_config", {})}
-            vector_retrieval_config = {**retrieval_config, **vector_config.get("retrieval_config", {})}
-            vector_reranker_config = {**reranker_config, **vector_config.get("reranker_config", {})}
-            
-            vector_rag = RetrievalFactory._create_vector_rag(
-                llm_config=llm_config,
-                embedding_config=vector_embedding_config,
-                retrieval_config=vector_retrieval_config,
-                reranker_config=vector_reranker_config,
-                **kwargs
-            )
-        
-        # Create Graph RAG if needed
-        graph_rag = None
-        if create_graph:
-            # Merge main configs with graph-specific configs
-            graph_llm_config = {**llm_config, **graph_config.get("llm_config", {})}
-            graph_embedding_config = {**embedding_config, **graph_config.get("embedding_config", {})}
-            graph_retrieval_config = {**retrieval_config, **graph_config.get("retrieval_config", {})}
-            
-            graph_rag = RetrievalFactory._create_graph_rag(
-                llm_config=graph_llm_config,
-                embedding_config=graph_embedding_config,
-                retrieval_config=graph_retrieval_config,
-                **kwargs
-            )
+        vector_rag = retrieval_config.get("vector_rag")
+        graph_rag = retrieval_config.get("graph_rag")
         
         # Create the hybrid RAG with both systems
         return HybridRAG(

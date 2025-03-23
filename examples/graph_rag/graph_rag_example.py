@@ -93,13 +93,13 @@ async def test_semantic_search():
     rag = await get_graph_rag()
     
     # Select a sample query
-    query = "Who was Albert Einstein and what did he discover?"
+    query = "Nguyễn Trãi mất năm nào?"
     
     try:
         # Perform semantic search
         results = rag.retrieve(
             query=query,
-            top_k=5,
+            top_k=10,
             use_semantic=True,
             use_graph=False
         )
@@ -133,7 +133,7 @@ async def test_graph_search():
         # Perform graph search
         results = rag.retrieve(
             query=query,
-            top_k=5,
+            top_k=10,
             use_semantic=False,
             use_graph=True
         )
@@ -142,7 +142,6 @@ async def test_graph_search():
         logger.info(f"Graph search results for query: '{query}'")
         logger.info(f"Found {len(results)} results:")
         
-        print("results: ", results)
         for i, result in enumerate(results, 1):
             logger.info(f"{i}. {result['text']}")
             if 'triplet' in result:
@@ -257,10 +256,10 @@ async def main():
         return
     
     # Run tests
-    # await test_semantic_search()
+    await test_semantic_search()
     logger.info("\n" + "="*50 + "\n")
     
-    await test_graph_search()
+    # await test_graph_search()
     logger.info("\n" + "="*50 + "\n")
     
     # await test_hybrid_search()

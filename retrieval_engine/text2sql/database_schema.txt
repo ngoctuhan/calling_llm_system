@@ -1,0 +1,103 @@
+E-COMMERCE DATABASE SCHEMA
+========================
+
++----------------+         +-------------------+         +----------------+
+| regions        |         | customers         |         | categories     |
++----------------+         +-------------------+         +----------------+
+| region_id (PK) |<---+    | customer_id (PK)  |         | category_id(PK)|
+| region_name    |    |    | first_name        |    +----| category_name  |
+| country        |    |    | last_name         |    |    | description    |
++----------------+    |    | email             |    |    +----------------+
+                      |    | phone             |    |
+                      +----| region_id (FK)    |    |    +----------------+
+                           | address           |    |    | products       |
+                           | city              |    |    +----------------+
+                           | postal_code       |    |    | product_id (PK)|
+                           | created_at        |    |    | product_name   |
+                           +-------------------+    |    | description    |
+                                |                   +----| category_id(FK)|
+                                |                        | price          |
+                                |                        | stock_quantity |
++-----------------------+       |                        | created_at     |
+| orders                |       |                        | last_updated   |
++-----------------------+       |                        +----------------+
+| order_id (PK)         |<------+                              |
+| customer_id (FK)      |                                      |
+| order_date            |                                      |
+| status                |                                      |
+| shipping_address      |                                      |
+| shipping_city         |                                      |
+| shipping_region_id(FK)|---+                                  |
+| shipping_postal_code  |   |                                  |
+| total_amount          |   +---> regions.region_id            |
+| payment_method        |                                      |
++-----------------------+                                      |
+          |                                                    |
+          |                                                    |
+          v                                                    |
++-----------------------+                                      |
+| order_items           |                                      |
++-----------------------+                                      |
+| order_item_id (PK)    |                                      |
+| order_id (FK)         |                                      |
+| product_id (FK)       |--------------------------------------+
+| quantity              |
+| unit_price            |
+| discount              |
+| subtotal (calculated) |
++-----------------------+
+
+
+VIEWS
+=====
+
+1. order_summary
+   - Combines orders, customers, regions, and order_items
+   - Shows order details with customer name and region information
+
+2. product_sales
+   - Combines products, categories, order_items, and orders
+   - Shows sales data for each product including revenue and customer counts
+
+3. customer_purchase_history
+   - Combines customers, regions, and orders
+   - Shows customer purchase metrics including total spent and average order value
+
+
+RELATIONSHIPS
+=============
+
+* customers.region_id -> regions.region_id
+* products.category_id -> categories.category_id
+* orders.customer_id -> customers.customer_id
+* orders.shipping_region_id -> regions.region_id
+* order_items.order_id -> orders.order_id
+* order_items.product_id -> products.product_id
+
+
+KEY DETAILS
+===========
+
+Primary Keys:
+- regions: region_id (SERIAL)
+- customers: customer_id (SERIAL)
+- categories: category_id (SERIAL)
+- products: product_id (SERIAL)
+- orders: order_id (SERIAL)
+- order_items: order_item_id (SERIAL)
+
+Foreign Keys:
+- customers.region_id -> regions.region_id
+- products.category_id -> categories.category_id
+- orders.customer_id -> customers.customer_id
+- orders.shipping_region_id -> regions.region_id
+- order_items.order_id -> orders.order_id
+- order_items.product_id -> products.product_id
+
+Indexes:
+- idx_customers_region on customers(region_id)
+- idx_products_category on products(category_id)
+- idx_orders_customer on orders(customer_id)
+- idx_orders_status on orders(status)
+- idx_order_items_order on order_items(order_id)
+- idx_order_items_product on order_items(product_id) 

@@ -54,7 +54,8 @@ DOCUMENTS = [
     "Virtual agents use AI to handle customer interactions without human intervention.",
     "Predictive analytics in call centers forecast call volumes and customer behavior.",
     "Customer satisfaction (CSAT) surveys measure how well agents resolve issues.",
-    "Call center automation reduces manual work and improves efficiency."
+    "Call center automation reduces manual work and improves efficiency.",
+    "Nguyễn Trãi (chữ Hán: 阮廌; 1380 – 19 tháng 9 năm 1442), hiệu là Ức Trai (抑齋), là một nhà chính trị, nhà văn, nhà văn hóa lớn của dân tộc Việt Nam. Ông đã tham gia tích cực cuộc Khởi nghĩa Lam Sơn do Lê Lợi lãnh đạo chống lại sự xâm lược của nhà Minh (Trung Quốc) với Đại Việt. Khi cuộc khởi nghĩa thành công vào năm 1428, Nguyễn Trãi trở thành một trong những khai quốc công thần của triều đại quân chủ nhà Hậu Lê trong Lịch sử Việt Nam.[2]"
 ]
 
 # Metadata for each document

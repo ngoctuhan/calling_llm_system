@@ -101,11 +101,10 @@ class GraphRAG(BaseRAG):
             similarity_threshold=similarity_threshold
         ))
         
-        print("results: ", results)
         # Format the results to match the BaseRAG expected format
         formatted_results = []
         for result in results:
-            # Convert triplet to text format
+            # Convert triplet to text format - chỉ hiển thị subject, predicate, object
             text = f"{result['subject']} {result['predicate']} {result['object']}"
             
             formatted_result = {
@@ -252,7 +251,7 @@ class GraphRAG(BaseRAG):
         query_text: str,
         query_embedding: List[float],
         hops: int = None,
-        limit: int = 20,
+        limit: int = 3,
         similarity_threshold: float = 0.7
     ):
         """
@@ -277,38 +276,7 @@ class GraphRAG(BaseRAG):
             limit=5,  # Limit the number of seed entities
             similarity_threshold=similarity_threshold
         )
-        
-        if not similar_entities:
-            logger.warning(f"No similar entities found by embedding for query: {query_text}")
-            
-            # Fallback: text-based search if no entities found by vector
-            keywords = [word.strip().lower() for word in query_text.split() if len(word.strip()) > 3]
-            
-            if keywords:
-                # Search using text-based query
-                search_conditions = []
-                params = {}
-                
-                for i, keyword in enumerate(keywords[:3]):  # Limit to 3 keywords
-                    param_name = f"keyword{i}"
-                    search_conditions.append(f"toLower(e.name) CONTAINS ${param_name}")
-                    params[param_name] = keyword
-                
-                search_query = f"""
-                MATCH (e:Entity)
-                WHERE {" OR ".join(search_conditions)}
-                RETURN e.name AS entity, 0.5 AS score
-                LIMIT 5
-                """
-                
-                similar_entities = self._neo4j.execute_query(search_query, params)
-                
-                if similar_entities:
-                    logger.info(f"Found {len(similar_entities)} entities by text search for query: {query_text}")
-                else:
-                    logger.warning(f"No entities found even by text search for query: {query_text}")
-                    return []
-        
+
         if not similar_entities:
             return []
         
@@ -323,6 +291,7 @@ class GraphRAG(BaseRAG):
             WHERE seed.name IN $entity_names
             MATCH (s)-[r]->(o)
             WHERE (s)-[*0..{hops}]-(seed) OR (o)-[*0..{hops}]-(seed)
+            AND type(r) <> 'FROM_DOCUMENT'
             RETURN DISTINCT
                 s.name AS subject,
                 r.name AS predicate,
@@ -334,13 +303,11 @@ class GraphRAG(BaseRAG):
                     WHEN (s)-[*0..1]-(seed) OR (o)-[*0..1]-(seed) THEN 2
                     ELSE 1
                 END AS relevance_score
-            ORDER BY relevance_score DESC
-            LIMIT $limit
+            ORDER BY seed_entity, relevance_score DESC
             """
             
             params = {
                 "entity_names": entity_names,
-                "limit": limit
             }
             
             result = self._neo4j.execute_query(query, params)
@@ -355,7 +322,7 @@ class GraphRAG(BaseRAG):
                     "relevance_score": record["relevance_score"],
                     "source": "semantic"
                 }
-                for record in result
+                for record in result[:limit]
             ]
         except Exception as e:
             logger.error(f"Error in semantic entity query with variable-length paths: {e}")
@@ -375,6 +342,7 @@ class GraphRAG(BaseRAG):
         query = """
         MATCH (seed:Entity)-[r1]-(mid)
         WHERE seed.name IN $entity_names
+        AND type(r1) <> 'FROM_DOCUMENT'
         RETURN DISTINCT
             seed.name AS subject,
             type(r1) AS predicate_type,
@@ -382,6 +350,7 @@ class GraphRAG(BaseRAG):
             mid.name AS object,
             seed.name AS seed_entity,
             1 AS relevance_score
+        ORDER BY seed_entity
         LIMIT $limit
         """
         
@@ -391,6 +360,8 @@ class GraphRAG(BaseRAG):
         }
         
         result = self._neo4j.execute_query(query, params)
+        
+        # Không cần sắp xếp ở đây vì ORDER BY đã được áp dụng trong truy vấn
         
         return [
             {
@@ -430,10 +401,9 @@ class GraphRAG(BaseRAG):
             limit=num_results,
             similarity_threshold=similarity_threshold
         )
-        
-        # Sort results by relevance (if available)
+        # Sort results by entity first, then by relevance
         if results:
-            results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+            results.sort(key=lambda x: (x.get("seed_entity", ""), -x.get("relevance_score", 0)))
             
         return results
     
@@ -457,6 +427,7 @@ class GraphRAG(BaseRAG):
         results = []
         
         for word in words:
+
             # Search for word as subject or object
             subject_results = self._neo4j.query_knowledge_graph(
                 subject=word,
@@ -510,12 +481,26 @@ class GraphRAG(BaseRAG):
         
         # Add semantic results with higher priority
         for result in semantic_results:
+            # Kiểm tra xem predicate có phải là FROM_DOCUMENT không
+            predicate = result.get("predicate", "")
+            predicate_type = result.get("predicate_type", "")
+            
+            if predicate == "FROM_DOCUMENT" or predicate_type == "FROM_DOCUMENT":
+                continue
+                
             triplet_id = create_triplet_id(result)
             if triplet_id and triplet_id not in combined_map:
                 combined_map[triplet_id] = result
         
         # Add structured results
         for result in structured_results:
+            # Kiểm tra xem predicate có phải là FROM_DOCUMENT không
+            predicate = result.get("predicate", "")
+            predicate_type = result.get("predicate_type", "")
+            
+            if predicate == "FROM_DOCUMENT" or predicate_type == "FROM_DOCUMENT":
+                continue
+                
             triplet_id = create_triplet_id(result)
             if triplet_id and triplet_id not in combined_map:
                 combined_map[triplet_id] = result

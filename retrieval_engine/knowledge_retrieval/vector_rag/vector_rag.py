@@ -289,4 +289,3 @@ class VectorRAG(BaseRAG):
             # If reranking fails, return the original documents
             return documents[:top_k]
     
-    

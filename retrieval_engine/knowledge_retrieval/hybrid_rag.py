@@ -1,10 +1,11 @@
 import logging
 import concurrent.futures
+import asyncio
 from typing import List, Dict, Any, Optional, Union, Tuple
 
 from retrieval_engine.knowledge_retrieval.base_rag import BaseRAG
 from retrieval_engine.knowledge_retrieval.vector_rag.vector_rag import VectorRAG
-from retrieval_engine.knowledge_retrieval.graph_rag.graph_rag import GraphRAGQueryEngine
+from retrieval_engine.knowledge_retrieval.graph_rag_v2.graph_rag import GraphRAG
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ class HybridRAG(BaseRAG):
     def __init__(
         self,
         vector_rag: Optional[VectorRAG] = None,
-        graph_rag: Optional[GraphRAGQueryEngine] = None,
+        graph_rag: Optional[GraphRAG] = None,
         vector_weight: float = 0.5,
         graph_weight: float = 0.5,
         combination_strategy: str = "weighted",
@@ -33,7 +34,7 @@ class HybridRAG(BaseRAG):
         
         Args:
             vector_rag (Optional[VectorRAG]): Vector RAG instance
-            graph_rag (Optional[GraphRAGQueryEngine]): Graph RAG instance
+            graph_rag (Optional[GraphRAG]): Graph RAG v2 instance
             vector_weight (float): Weight for vector results (0.0 to 1.0)
             graph_weight (float): Weight for graph results (0.0 to 1.0)
             combination_strategy (str): How to combine results ('weighted', 'ensemble', 'cascade')
@@ -163,15 +164,25 @@ class HybridRAG(BaseRAG):
         normalized = []
         
         for i, result in enumerate(graph_results):
-            # Convert graph community summaries to document-like format
-            normalized.append({
-                "content": result if isinstance(result, str) else str(result),
-                "metadata": {
-                    "source": "graph",
-                    "result_id": f"graph_{i}"
-                },
-                "score": 1.0  # Default score
-            })
+            # GraphRAG v2 đã có format gần với format chuẩn, chỉ cần thêm trường score
+            if "text" in result and "content" in result and "metadata" in result:
+                # Format mới của GraphRAG v2
+                normalized_result = result.copy()
+                # Đưa relevance_score từ metadata thành score chính cho việc sắp xếp
+                normalized_result["score"] = result["metadata"].get("confidence", 1.0)
+                normalized.append(normalized_result)
+            else:
+                # Fallback cho format khác
+                normalized.append({
+                    "content": result if isinstance(result, str) else str(result),
+                    "text": result if isinstance(result, str) else str(result),
+                    "metadata": {
+                        "source": "graph",
+                        "result_id": f"graph_{i}",
+                        "confidence": 1.0
+                    },
+                    "score": 1.0  # Default score
+                })
         
         return normalized
     
@@ -397,4 +408,25 @@ class HybridRAG(BaseRAG):
         
         # Otherwise, just sort by score and return top_k
         sorted_docs = sorted(documents, key=lambda x: x.get("score", 0.0), reverse=True)
-        return sorted_docs[:top_k] 
+        return sorted_docs[:top_k]
+    
+    async def close(self):
+        """Close all connections from RAG systems."""
+        if hasattr(self.graph_rag, 'close') and callable(self.graph_rag.close):
+            try:
+                await self.graph_rag.close()
+                logger.info("Closed GraphRAG connections")
+            except Exception as e:
+                logger.error(f"Error closing GraphRAG connections: {e}")
+        
+        if hasattr(self.vector_rag, 'close') and callable(self.vector_rag.close):
+            try:
+                if asyncio.iscoroutinefunction(self.vector_rag.close):
+                    await self.vector_rag.close()
+                else:
+                    self.vector_rag.close()
+                logger.info("Closed VectorRAG connections")
+            except Exception as e:
+                logger.error(f"Error closing VectorRAG connections: {e}")
+        
+        logger.info("HybridRAG connections closed") 
