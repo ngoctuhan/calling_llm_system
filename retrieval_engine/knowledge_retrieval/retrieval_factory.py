@@ -266,13 +266,6 @@ class RetrievalFactory:
         neo4j_password = retrieval_config.get("password", "password")
         neo4j_url = retrieval_config.get("url", "neo4j://127.0.0.1:7687")
         
-        # Extract retrieval parameters
-        semantic_search_limit = retrieval_config.get("semantic_search_limit", 10)
-        graph_search_limit = retrieval_config.get("graph_search_limit", 10)
-        hybrid_search = retrieval_config.get("hybrid_search", True)
-        similarity_threshold = retrieval_config.get("similarity_threshold", 0.7)
-        max_hops = retrieval_config.get("max_hops", 2)
-        
         llm = LLMProviderFactory.create_provider(llm_model_name, 
                                                  llm_api_key)
 
@@ -301,11 +294,6 @@ class RetrievalFactory:
             graph_store=neo4j_connection,
             graph_extractor=graph_extractor,
             embedding_provider=embedding_provider,
-            hybrid_search=hybrid_search,
-            semantic_search_limit=semantic_search_limit,
-            graph_search_limit=graph_search_limit,
-            similarity_threshold=similarity_threshold,
-            max_hops=max_hops,
             **kwargs
         )
 

@@ -38,7 +38,7 @@ class BaseRAG(ABC):
         pass
     
     @abstractmethod
-    def rerank(self, query: str, documents: List[Dict[str, Any]], top_k: int = 5) -> List[Dict[str, Any]]:
+    def rerank(self, query: str, documents: List[Dict[str, Any]], top_k: int = 10) -> List[Dict[str, Any]]:
         """
         Rerank retrieved documents based on relevance to the query.
         

@@ -1,12 +1,15 @@
 import os
 import logging
 import asyncio
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple, Set, Union
+import math
+from functools import lru_cache
 
 from ..base_rag import BaseRAG
 from .neo4j_connection import SimpleNeo4jConnection
 from .graph_extractor import GraphExtractor
 from .embeddings import EmbeddingProvider
+from retrieval_engine.knowledge_retrieval.vector_rag.reranker import DocumentReranker, RerankMethod
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +18,7 @@ class GraphRAG(BaseRAG):
     Graph-based Retrieval Augmented Generation (RAG) system
     
     This implementation uses a knowledge graph stored in Neo4j to provide 
-    context-aware retrieval through semantic and structured search.
+    context-aware retrieval through semantic search.
     """
     
     def __init__(
@@ -26,22 +29,26 @@ class GraphRAG(BaseRAG):
         embedding_provider: EmbeddingProvider,
         
         # Query configuration
-        semantic_search_limit: int = 10,
-        graph_search_limit: int = 10,
-        hybrid_search: bool = True,
+        top_k_entities: int = 5,
         similarity_threshold: float = 0.7,
-        max_hops: int = 2,
+        max_results: int = 20,
         
+        # Reranker configuration
+        reranker_strategy: Union[str, RerankMethod] = RerankMethod.CROSS_ENCODER,
+        reranker_model_name: Optional[str] = None,
     ):
         """
         Initialize GraphRAG
         
         Args:
-            semantic_search_limit: Maximum number of results from semantic search
-            graph_search_limit: Maximum number of results from graph search
-            hybrid_search: Whether to use hybrid search (semantic + graph)
+            graph_store: Neo4j connection
+            graph_extractor: Graph extraction utility
+            embedding_provider: Embedding provider
+            top_k_entities: Number of top entities to use as seeds
             similarity_threshold: Threshold for semantic similarity
-            max_hops: Maximum number of hops for graph traversal
+            max_results: Maximum number of results to return
+            reranker_strategy: Strategy for reranking (cross_encoder, bm25, mmr, default)
+            reranker_model_name: Name of the reranker model
         """
         
         self._neo4j = graph_store
@@ -49,11 +56,15 @@ class GraphRAG(BaseRAG):
         self._embedder = embedding_provider
         
         # Query settings
-        self.semantic_search_limit = semantic_search_limit
-        self.graph_search_limit = graph_search_limit
-        self.hybrid_search = hybrid_search
+        self.top_k_entities = top_k_entities
         self.similarity_threshold = similarity_threshold
-        self.max_hops = max_hops
+        self.max_results = max_results
+        
+        # Initialize reranker
+        self.reranker = DocumentReranker(
+            strategy=reranker_strategy,
+            model_name=reranker_model_name
+        )
     
     async def close(self):
         """Close all connections"""
@@ -68,73 +79,61 @@ class GraphRAG(BaseRAG):
     
     def retrieve(self, query: str, top_k: int = 5, **kwargs) -> List[Dict[str, Any]]:
         """
-        Retrieve knowledge graph information based on a query.
+        Retrieve knowledge graph information based on a query using only semantic search.
         
         Args:
             query (str): The user query
             top_k (int): Number of results to retrieve
             **kwargs: Additional parameters:
-                use_semantic: Whether to use semantic search (default: True)
-                use_graph: Whether to use graph-based search (default: True if use_semantic is False)
                 similarity_threshold: Threshold for semantic similarity
             
         Returns:
             List[Dict[str, Any]]: List of retrieved triplets
         """  
-        
-        # Set up query parameters
-        use_semantic = kwargs.get("use_semantic", True)
-        use_graph = kwargs.get("use_graph", not use_semantic)
-        similarity_threshold = kwargs.get("similarity_threshold", self.similarity_threshold)
-        
-        # Generate embedding for semantic search
-        query_embedding = None
-        if use_semantic:
+        try:
+            # Generate embedding for semantic search
             query_embedding = self._embedder.embed_query(query)
-        
-        # Run the async query
-        results = asyncio.run(self._async_retrieve(
-            query_text=query,
-            query_embedding=query_embedding,
-            use_semantic_search=use_semantic,
-            use_graph_search=use_graph,
-            limit=top_k,
-            similarity_threshold=similarity_threshold
-        ))
-        
-        # Format the results to match the BaseRAG expected format
-        formatted_results = []
-        for result in results:
-            # Convert triplet to text format - include description if available
-            description = result.get('description', '')
-            if description:
-                text = description
-            else:
-                text = f"{result['subject']} {result['predicate']} {result['object']}"
             
-            formatted_result = {
-                "text": text,
-                "content": text,
-                "triplet": {
-                    "subject": result.get("subject"),
-                    "predicate": result.get("predicate"),
-                    "object": result.get("object"),
-                    "description": result.get("description", "")
-                },
-                "metadata": {
-                    "source": result.get("source", "knowledge_graph"),
-                    "confidence": result.get("relevance_score", 1.0),
-                    "seed_entity": result.get("seed_entity", ""),
-                    "document_id": result.get("document_id", "")
+            # Get similarity threshold from kwargs or default
+            similarity_threshold = kwargs.get("similarity_threshold", self.similarity_threshold)
+            
+            # Run the async query
+            results = asyncio.run(self._retrieve_semantic(
+                query_text=query,
+                query_embedding=query_embedding,
+                top_k_entities=self.top_k_entities,
+                limit=top_k * 2,  # Get more results to filter
+                similarity_threshold=similarity_threshold
+            ))
+            
+            # Format the results to match the BaseRAG expected format
+            formatted_results = []
+            for result in results:
+                # Convert triplet to text format - include description if available
+                description = result.get('description', '')
+                if description:
+                    text = description
+                else:
+                    text = f"{result['subject']} {result['predicate']} {result['object']}"
+                
+                formatted_result = {
+                    "text": text,
+                    "triplet": f"""({result.get("subject")}) --[{result.get("predicate")}]--> ({result.get("object")})""",
+                    "metadata": {
+                        "source": result.get("source", "knowledge_graph"),
+                        "document_id": result.get("document_id", "")
+                    }
                 }
-            }
-            formatted_results.append(formatted_result)
-            
-        return formatted_results
+                formatted_results.append(formatted_result)
+            return formatted_results
+        
+        except Exception as e:
+            logger.error(f"Error in retrieve: {str(e)}")
+            return []
     
-    def rerank(self, query: str, documents: List[Dict[str, Any]], top_k: int = 5) -> List[Dict[str, Any]]:
+    def rerank(self, query: str, documents: List[Dict[str, Any]], top_k: int = 10) -> List[Dict[str, Any]]:
         """
-        Rerank retrieved documents based on relevance to the query.
+        Rerank retrieved documents using the configured reranker.
         
         Args:
             query (str): The original user query
@@ -144,89 +143,106 @@ class GraphRAG(BaseRAG):
         Returns:
             List[Dict[str, Any]]: Reranked documents with scores
         """
-        # Simple reranking based on confidence/relevance score
-        return documents
+        try:
+            # Format documents for reranker
+            formatted_docs = []
+            for doc in documents:
+                formatted_doc = {
+                    "id": doc.get("metadata", {}).get("document_id", ""),
+                    "content": doc.get("text", ""),
+                    "score": 1.0,  # Default score
+                    "metadata": doc.get("metadata", {})
+                }
+                formatted_docs.append(formatted_doc)
+            
+            # Rerank documents
+            reranked_docs = self.reranker.rerank(
+                query=query,
+                documents=formatted_docs,
+                top_k=top_k
+            )
+            
+            # Format results back to original structure
+            results = []
+            for doc in reranked_docs:
+                result = {
+                    "text": doc.get("content", ""),
+                    "triplet": doc.get("metadata", {}).get("triplet", ""),
+                    "metadata": {
+                        "source": doc.get("metadata", {}).get("source", "knowledge_graph"),
+                        "document_id": doc.get("id", ""),
+                        "score": doc.get("score", 1.0)
+                    }
+                }
+                results.append(result)
+            
+            logger.info(f"Reranked {len(results)} documents")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in reranking: {str(e)}")
+            # If reranking fails, return the original documents
+            return documents[:top_k]
     
-    async def _async_retrieve(
+    async def _retrieve_semantic(
         self,
         query_text: str,
-        query_embedding: List[float] = None,
-        use_semantic_search: bool = True,
-        use_graph_search: bool = True,
+        query_embedding: List[float],
+        top_k_entities: int = 5,
         limit: int = 10,
         similarity_threshold: float = 0.7
     ) -> List[Dict[str, Any]]:
         """
-        Asynchronous retrieval from knowledge graph
+        Retrieve triplets using semantic search
+        
+        1. Find top k nearest entities
+        2. Get all triplets where these entities appear
+        3. Return triplets with descriptions
         
         Args:
             query_text: The query text
-            query_embedding: Embedding vector for the query
-            use_semantic_search: Whether to use semantic search
-            use_graph_search: Whether to use graph-based search
-            limit: Maximum number of results to return
-            similarity_threshold: Threshold for semantic similarity
+            query_embedding: The query embedding vector
+            top_k_entities: Number of top entities to use as seeds
+            limit: Maximum number of results
+            similarity_threshold: Minimum similarity score
             
         Returns:
             List of matching triplets
         """
-        semantic_results = []
-        graph_results = []
+        # Find top k entities by semantic similarity
+        similar_entities = await self._find_similar_entities(
+            query_embedding=query_embedding,
+            limit=top_k_entities,
+            similarity_threshold=similarity_threshold
+        )
         
-        # Run searches in parallel
-        search_tasks = []
-        
-        if use_semantic_search and query_embedding is not None:
-            semantic_task = asyncio.create_task(
-                self._perform_semantic_search(
-                    query_text=query_text,
-                    query_embedding=query_embedding,
-                    num_results=limit,
-                    similarity_threshold=similarity_threshold
-                )
-            )
-            search_tasks.append(semantic_task)
-        
-        if use_graph_search:
-            graph_task = asyncio.create_task(
-                self._perform_structured_search(
-                    query_text,
-                    num_results=limit
-                )
-            )
-            search_tasks.append(graph_task)
-        
-        # Wait for all search tasks to complete
-        search_results = await asyncio.gather(*search_tasks)
-        
-        # Assign results based on which searches were enabled
-        if use_semantic_search and use_graph_search and query_embedding is not None:
-            semantic_results = search_results[0]
-            graph_results = search_results[1]
-        elif use_semantic_search and query_embedding is not None:
-            semantic_results = search_results[0]
-        elif use_graph_search:
-            graph_results = search_results[0]
-        
-        # Combine results if needed
-        if self.hybrid_search and semantic_results and graph_results:
-            combined_results = self._combine_search_results(
-                semantic_results,
-                graph_results,
-                num_results=limit
-            )
-            return combined_results
-        elif semantic_results:
-            return semantic_results
-        elif graph_results:
-            return graph_results
-        else:
+        if not similar_entities:
+            logger.info("No similar entities found for the query")
             return []
+        
+        # Extract entity names and scores
+        entity_data = [(entity["entity"], entity["score"]) for entity in similar_entities]
+        entity_names = [entity for entity, _ in entity_data]
+        
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Found {len(entity_names)} similar entities: {entity_names}")
+        else:
+            logger.info(f"Found {len(entity_names)} similar entities")
+
+        # Get all triplets involving these entities
+        triplets = await self._get_entity_triplets(
+            entity_names=entity_names,
+            entity_scores=dict(entity_data),
+            limit=limit
+        )
+        
+        logger.info(f"Retrieved {len(triplets)} triplets for the query")
+        return triplets
     
     async def _find_similar_entities(
         self,
         query_embedding: List[float],
-        limit: int = 10,
+        limit: int = 5,
         similarity_threshold: float = 0.7
     ):
         """
@@ -258,381 +274,68 @@ class GraphRAG(BaseRAG):
             
         return formatted_results
     
-    async def _find_similar_relationships(
-        self,
-        query_embedding: List[float],
-        limit: int = 10,
-        similarity_threshold: float = 0.7
+    async def _get_entity_triplets(
+        self, 
+        entity_names: List[str], 
+        entity_scores: Dict[str, float],
+        limit: int = 20
     ):
         """
-        Find similar relationships to the query embedding
+        Get all triplets where the specified entities appear as either subject or object
         
         Args:
-            query_embedding: Embedding vector of the query
-            limit: Number of relationships to return
-            similarity_threshold: Minimum similarity score
-            
-        Returns:
-            List of similar relationships and their similarity scores
-        """
-        # Perform vector search through Neo4j for relationships
-        result = self._neo4j.run_vector_search(
-            query_embedding=query_embedding,
-            node_type="relationship",
-            limit=limit,
-            similarity_threshold=similarity_threshold
-        )
-        
-        return result
-    
-    async def _perform_semantic_search(
-        self,
-        query_text: str,
-        query_embedding: List[float],
-        num_results: int = 10,
-        similarity_threshold: float = 0.7
-    ) -> List[Dict[str, Any]]:
-        """
-        Perform semantic search using query embedding
-        
-        Args:
-            query_text: The query text
-            query_embedding: The query embedding vector
-            num_results: Maximum number of results
-            similarity_threshold: Minimum similarity score
-            
-        Returns:
-            List of matching triplets
-        """
-        # Find similar entities and relationships based on embeddings
-        similar_entities_task = asyncio.create_task(
-            self._find_similar_entities(
-                query_embedding=query_embedding,
-                limit=num_results//2,
-                similarity_threshold=similarity_threshold
-            )
-        )
-        
-        similar_relationships_task = asyncio.create_task(
-            self._find_similar_relationships(
-                query_embedding=query_embedding,
-                limit=num_results//2,
-                similarity_threshold=similarity_threshold
-            )
-        )
-        
-        # Wait for both searches to complete
-        similar_entities, similar_relationships = await asyncio.gather(
-            similar_entities_task, similar_relationships_task
-        )
-        
-        # If we have similar relationships, use them directly
-        relationship_results = []
-        if similar_relationships:
-            for rel in similar_relationships:
-                relationship_results.append({
-                    "subject": rel.get("subject", ""),
-                    "predicate": rel.get("predicate", ""),
-                    "object": rel.get("object", ""),
-                    "description": rel.get("description", ""),
-                    "relevance_score": rel.get("score", 0.0),
-                    "source": "semantic_relationship",
-                    "seed_entity": ""
-                })
-        
-        # Extract entity names from similar entities
-        entity_names = [entity["entity"] for entity in similar_entities]
-        
-        # If we have similar relationships, extract predicates for targeted graph search
-        relationship_names = []
-        if similar_relationships:
-            relationship_names = list(set([rel.get("predicate", "") for rel in similar_relationships]))
-        
-        # If we have both entity names and relationship names, perform targeted search
-        entity_relationship_results = []
-        if entity_names and relationship_names:
-            # Query relationships that involve the similar entities and use the similar predicates
-            er_results = self._neo4j.query_entity_relationships(
-                entity_names=entity_names,
-                relationship_names=relationship_names,
-                limit=num_results
-            )
-            
-            # Process results
-            for record in er_results:
-                entity_relationship_results.append({
-                    "subject": record.get("subject", ""),
-                    "predicate": record.get("predicate", "") or record.get("predicate_type", ""),
-                    "object": record.get("object", ""),
-                    "description": record.get("description", ""),
-                    "relevance_score": record.get("relevance_score", 0.0),
-                    "source": "entity_relationship",
-                    "seed_entity": ""
-                })
-        
-        # If we still need more results, or no entity_relationship_results were found,
-        # use the traditional semantic entity query
-        traditional_results = []
-        if len(relationship_results) + len(entity_relationship_results) < num_results:
-            remaining_results = num_results - len(relationship_results) - len(entity_relationship_results)
-            traditional_results = await self._semantic_entity_query(
-                query_text=query_text,
-                query_embedding=query_embedding,
-                limit=remaining_results,
-                similarity_threshold=similarity_threshold
-            )
-        
-        # Combine all results
-        combined_results = relationship_results + entity_relationship_results + traditional_results
-        
-        # Sort by relevance score
-        combined_results.sort(key=lambda x: x.get("relevance_score", 0.0), reverse=True)
-        
-        # Return limited results
-        return combined_results[:num_results]
-    
-    async def _semantic_entity_query(
-        self,
-        query_text: str,
-        query_embedding: List[float],
-        hops: int = None,
-        limit: int = 3,
-        similarity_threshold: float = 0.8
-    ):
-        """
-        Perform semantic query based on vector embeddings and graph traversal
-        
-        Args:
-            query_text: Original text query
-            query_embedding: Embedding vector of the query
-            hops: Number of graph traversal steps (default: self.max_hops)
-            limit: Maximum number of results
-            similarity_threshold: Minimum similarity threshold
-            
-        Returns:
-            List of related triplets
-        """
-        
-        hops = hops if hops is not None else self.max_hops
-        
-        # Find similar entities based on vector embedding
-        similar_entities = await self._find_similar_entities(
-            query_embedding,
-            limit=3,  # Limit the number of seed entities
-            similarity_threshold=similarity_threshold
-        )
-        if not similar_entities:
-            return []
-        
-        # Extract entity names
-        entity_names = [entity["entity"] for entity in similar_entities]
-        # Query the graph to explore neighborhood
-        try:
-            # Simplified query that doesn't rely on APOC
-            query = f"""
-            MATCH (seed:Entity)
-            WHERE seed.name IN $entity_names
-
-            // First identify all relevant entities within the specified hop distance
-            WITH collect(seed) AS seeds
-            MATCH (relevant_entity)
-            WHERE any(s IN seeds WHERE (relevant_entity)-[*0..{hops}]-(s))
-
-            // Now match the relationships, explicitly filtering out FROM_DOCUMENT
-            MATCH (s)-[r]->(o)
-            WHERE s = relevant_entity OR o = relevant_entity
-            AND NOT type(r) = 'FROM_DOCUMENT'
-
-            // Get the associated seed entity
-            WITH s, r, o, 
-                [seed IN seeds WHERE (s)-[*0..{hops}]-(seed) OR (o)-[*0..{hops}]-(seed)] AS related_seeds
-
-            RETURN DISTINCT
-                s.name AS subject,
-                r.name AS predicate,
-                type(r) AS predicate_type,
-                o.name AS object,
-                r.description AS description,
-                related_seeds[0].name AS seed_entity,
-                CASE 
-                    WHEN any(seed IN related_seeds WHERE (s)-[*0..1]-(seed) AND (o)-[*0..1]-(seed)) THEN 3
-                    WHEN any(seed IN related_seeds WHERE (s)-[*0..1]-(seed) OR (o)-[*0..1]-(seed)) THEN 2
-                    ELSE 1
-                END AS relevance_score
-            ORDER BY seed_entity, relevance_score DESC
-            """
-            
-            params = {
-                "entity_names": entity_names,
-            }
-            result = self._neo4j.execute_query(query, params)
-            # Process results
-            return [
-                {
-                    "subject": record["subject"],
-                    "predicate": record.get("predicate") or record.get("predicate_type"),
-                    "object": record["object"],
-                    "description": record.get("description", ""),
-                    "seed_entity": record["seed_entity"],
-                    "relevance_score": record["relevance_score"],
-                    "source": "semantic"
-                }
-                for record in result if record.get("predicate_type") != 'FROM_DOCUMENT'
-            ]
-        except Exception as e:
-            logger.error(f"Error in semantic entity query with variable-length paths: {e}")
-            return await self._fallback_entity_neighborhood_query(entity_names, limit)
-    
-    async def _fallback_entity_neighborhood_query(self, entity_names: List[str], limit: int = 20):
-        """
-        Fallback query for entity neighborhood when complex queries fail
-        
-        Args:
-            entity_names: List of seed entity names
+            entity_names: List of entity names to find triplets for
+            entity_scores: Dictionary mapping entity names to similarity scores
             limit: Maximum number of results
             
         Returns:
-            List of simple neighborhood triplets
+            List of triplets with descriptions and context
         """
-        query = """
-        MATCH (seed:Entity)-[r1]-(mid)
-        WHERE seed.name IN $entity_names
+        # Optimized single query that handles both subject and object cases
+        unified_query = """
+        MATCH (seed:Entity)-[r1]-(mid:Entity)
+        WHERE seed.name IN $entity_names OR mid.name IN $entity_names
         AND type(r1) <> 'FROM_DOCUMENT'
         RETURN DISTINCT
             seed.name AS subject,
             type(r1) AS predicate_type,
             r1.name AS predicate,
-            mid.name AS object,
             r1.description AS description,
-            seed.name AS seed_entity,
-            1 AS relevance_score
+            mid.name AS object,
+            CASE 
+                WHEN seed.name IN $entity_names THEN seed.name
+                ELSE mid.name
+            END AS seed_entity
         ORDER BY seed_entity
-        LIMIT $limit
         """
         
         params = {
             "entity_names": entity_names,
-            "limit": limit
         }
         
-        result = self._neo4j.execute_query(query, params)
-        
-        # Không cần sắp xếp ở đây vì ORDER BY đã được áp dụng trong truy vấn
-        
-        return [
-            {
-                "subject": record["subject"],
-                "predicate": record.get("predicate") or record.get("predicate_type"),
-                "object": record["object"],
-                "description": record.get("description", ""),
-                "seed_entity": record["seed_entity"],
-                "relevance_score": record["relevance_score"],
-                "source": "semantic_fallback"
-            }
-            for record in result
-        ]
-        
-    async def _perform_structured_search(
-        self,
-        query_text: str,
-        num_results: int = 10
-    ) -> List[Dict[str, Any]]:
-        """
-        Perform structured search using text patterns
-        
-        Args:
-            query_text: The query text
-            num_results: Maximum number of results
+        try:
+            # Execute the unified query
+            results = self._neo4j.execute_query(unified_query, params)
+            # Use dictionary to keep only one result per description
+            unique_results = {}
             
-        Returns:
-            List of matching triplets
-        """
-        # Try direct keyword search (non-exact match)
-        words = [w for w in query_text.split() if len(w) > 3]
-        results = []
-        
-        for word in words:
-
-            # Search for word as subject or object
-            subject_results = self._neo4j.query_knowledge_graph(
-                subject=word,
-                limit=num_results // 2
-            )
+            for record in results:
+                description = record.get("description", "")
+                if description not in unique_results:
+                    unique_results[description] = {
+                        "subject": record["subject"],
+                        "predicate": record.get("predicate") or record.get("predicate_type"),
+                        "object": record["object"],
+                        "description": description,
+                        "seed_entity": record["seed_entity"],
+                        "source": "semantic"
+                    }
+            # Convert dictionary values to list and limit results
+            formatted_results = list(unique_results.values())
+            return formatted_results
             
-            object_results = self._neo4j.query_knowledge_graph(
-                object_entity=word,
-                limit=num_results // 2
-            )
-            
-            # Add source information
-            for result in subject_results + object_results:
-                result["source"] = "structured"
-                result["relevance_score"] = 0.8  # Default score for structured search
-            
-            results.extend(subject_results)
-            results.extend(object_results)
-            
-            if len(results) >= num_results:
-                break
-        
-        return results[:num_results]
+        except Exception as e:
+            logger.error(f"Error executing triplet query: {str(e)}")
+            return []
     
-    def _combine_search_results(
-        self,
-        semantic_results: List[Dict[str, Any]],
-        structured_results: List[Dict[str, Any]],
-        num_results: int = 10
-    ) -> List[Dict[str, Any]]:
-        """
-        Combine and rank semantic and structured search results
-        
-        Args:
-            semantic_results: Results from semantic search
-            structured_results: Results from structured search
-            num_results: Maximum number of results to return
-            
-        Returns:
-            Combined and ranked results
-        """
-        # Create a unique identifier for each triplet
-        def create_triplet_id(triplet):
-            subj = triplet.get("subject", "")
-            pred = triplet.get("predicate", "")
-            obj = triplet.get("object", "")
-            return f"{subj}|{pred}|{obj}"
-        
-        # Create a map of triplet_id to result for deduplication
-        combined_map = {}
-        
-        # Add semantic results with higher priority
-        for result in semantic_results:
-            # Kiểm tra xem predicate có phải là FROM_DOCUMENT không
-            predicate = result.get("predicate", "")
-            predicate_type = result.get("predicate_type", "")
-            
-            if predicate == "FROM_DOCUMENT" or predicate_type == "FROM_DOCUMENT":
-                continue
-                
-            triplet_id = create_triplet_id(result)
-            if triplet_id and triplet_id not in combined_map:
-                combined_map[triplet_id] = result
-        
-        # Add structured results
-        for result in structured_results:
-            # Kiểm tra xem predicate có phải là FROM_DOCUMENT không
-            predicate = result.get("predicate", "")
-            predicate_type = result.get("predicate_type", "")
-            
-            if predicate == "FROM_DOCUMENT" or predicate_type == "FROM_DOCUMENT":
-                continue
-                
-            triplet_id = create_triplet_id(result)
-            if triplet_id and triplet_id not in combined_map:
-                combined_map[triplet_id] = result
-        
-        # Convert back to list and sort by relevance score
-        combined_results = list(combined_map.values())
-        combined_results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
-        
-        # Limit results
-        return combined_results[:num_results] 
+    

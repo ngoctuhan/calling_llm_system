@@ -1,7 +1,8 @@
 import json
 import uuid
 import re
-import unidecode
+from unidecode import unidecode
+import traceback
 import logging
 import asyncio
 from typing import List, Dict, Any, Optional, Tuple, Union
@@ -250,6 +251,7 @@ class GraphExtractor:
             return triplets
             
         except Exception as e:
+            traceback.print_exc()
             logger.error(f"Error extracting triplets: {str(e)}")
             return []
     

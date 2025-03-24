@@ -77,7 +77,8 @@ async def get_graph_builder():
     
     graph_extractor = GraphExtractor(llm=llm, 
                                      embedding_provider=embedding_provider,
-                                     batch_size=30)
+                                     batch_size=30,
+                                     max_knowledge_triplets=100)
     
     # Initialize Neo4j connection
     neo4j_connection = SimpleNeo4jConnection(
@@ -123,7 +124,7 @@ async def process_documents_task(
 ):
     try:
         chunker = TextChunker(min_chunk_size=chunk_size, max_chunk_size=chunk_size*2, chunk_overlap=chunk_overlap)
-        chunker_for_graph = TextChunker(min_chunk_size=400, max_chunk_size=650, chunk_overlap=chunk_overlap)
+        chunker_for_graph = TextChunker(min_chunk_size=1000, max_chunk_size=3000, chunk_overlap=chunk_overlap)
         vector_rag = get_vector_rag(collection_name)
         graph_builder = await get_graph_builder()
         
@@ -142,17 +143,16 @@ async def process_documents_task(
                 documents=chunk_texts,
                 metadatas=chunk_metadatas,
             )
-
-            # chunks_graph = chunker_for_graph.chunk(doc, metadata)
-            # graph_documents = [
-            #     {
-            #         "text": chunk['text'],
-            #         "document_id": doc_id,
-            #         "metadata": chunk['metadata'] 
-            #     }
-            #     for chunk in chunks_graph
-            # ]
-            # await graph_builder.process_documents(graph_documents, concurrency=10)
+            chunks_graph = chunker_for_graph.chunk(doc, metadata)
+            graph_documents = [
+                {
+                    "text": chunk['text'],
+                    "document_id": doc_id,
+                    "metadata": chunk['metadata'] 
+                }
+                for chunk in chunks_graph
+            ]
+            await graph_builder.process_documents(graph_documents, concurrency=10)
             logger.info(f"Processed document {i+1}/{len(documents)}: {doc_id} into {len(chunks)} chunks")
         
         # Close connections

@@ -399,25 +399,34 @@ class SimpleNeo4jConnection:
         # Try using vector index if available
         try:
             if node_type.lower() == "entity":
-                # Search entities
+                # Search entities using direct vector index query
                 vector_query = """
                 MATCH (e:Entity)
                 WHERE e.embedding IS NOT NULL
-                WITH e, gds.similarity.cosine(e.embedding, $query_embedding) AS score
+                CALL db.index.vector.queryNodes(
+                    'entity_embedding',
+                    $k,
+                    $query_embedding
+                ) YIELD node, score
                 WHERE score >= $threshold
-                RETURN DISTINCT e.name AS name, score, 'entity' AS type
+                RETURN DISTINCT node.name AS name, score, 'entity' AS type
                 ORDER BY score DESC
                 LIMIT $limit
                 """
             else:
-                # Search relationships
+                # Search relationships using direct vector index query
                 vector_query = """
                 MATCH (s:Entity)-[r]->(o:Entity)
                 WHERE r.embedding IS NOT NULL
-                WITH s, r, o, gds.similarity.cosine(r.embedding, $query_embedding) AS score
+                CALL db.index.vector.queryRelationships(
+                    'relationship_embedding',
+                    $k,
+                    $query_embedding
+                ) YIELD relationship, score
                 WHERE score >= $threshold
-                RETURN DISTINCT s.name AS subject, r.name AS predicate, o.name AS object, 
-                       score, 'relationship' AS type, r.description AS description
+                MATCH (s)-[relationship]->(o)
+                RETURN DISTINCT s.name AS subject, relationship.name AS predicate, o.name AS object, 
+                       score, 'relationship' AS type, relationship.description AS description
                 ORDER BY score DESC
                 LIMIT $limit
                 """
@@ -425,7 +434,8 @@ class SimpleNeo4jConnection:
             params = {
                 "query_embedding": query_embedding,
                 "threshold": similarity_threshold,
-                "limit": limit
+                "limit": limit,
+                "k": limit * 2  # Request more results to ensure we get enough after filtering
             }
             
             result = self.execute_query(vector_query, params)
