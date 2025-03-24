@@ -64,130 +64,242 @@ class BaseChunker(DataChunker):
         return chunk_metadata
 
 
-class TextChunker(BaseChunker):
-    """Chunker for general text documents."""
+from typing import Dict, Any, List
+import re
+import uuid
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+class TextChunker:
+    """Advanced text chunker with configurable parameters for optimal text splitting."""
     
-    def __init__(self, min_chunk_size=500, max_chunk_size=1500, chunk_overlap=100):
+    def __init__(self, 
+                 min_chunk_size: int = 500, 
+                 max_chunk_size: int = 1500, 
+                 chunk_overlap: int = 100,
+                 split_by_semantic_units: bool = True):
         """
-        Initialize the text chunker.
+        Initialize the text chunker with customizable parameters.
         
         Args:
-            min_chunk_size: Minimum size of chunks
-            max_chunk_size: Maximum size of chunks
+            min_chunk_size: Minimum size of chunks in characters
+            max_chunk_size: Maximum size of chunks in characters
             chunk_overlap: Number of characters to overlap between chunks
+            split_by_semantic_units: Whether to split by semantic units (paragraphs, sentences)
         """
         self.min_chunk_size = min_chunk_size
         self.max_chunk_size = max_chunk_size
         self.chunk_overlap = chunk_overlap
+        self.split_by_semantic_units = split_by_semantic_units
+        
+    def _get_chunk_metadata(self, metadata: Dict[str, Any], chunk_index: int, 
+                           start_idx: int, end_idx: int) -> Dict[str, Any]:
+        """
+        Create metadata for a chunk.
+        
+        Args:
+            metadata: Source metadata
+            chunk_index: Index of the current chunk
+            start_idx: Start index of chunk in original text
+            end_idx: End index of chunk in original text
+            
+        Returns:
+            Metadata dictionary for the chunk
+        """
+        # Create a new ID for the chunk
+        chunk_id = str(uuid.uuid4())
+        
+        # Create a copy of the metadata with chunk-specific additions
+        chunk_metadata = metadata.copy() if metadata else {}
+        chunk_metadata.update({
+            'chunk_id': chunk_id,
+            'chunk_index': chunk_index,
+            'text_range_start': start_idx,
+            'text_range_end': end_idx,
+            'chunk_size': end_idx - start_idx
+        })
+        
+        return chunk_metadata
     
-    def chunk(self, text: str, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def chunk(self, text: str, metadata: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """
         Split text into chunks with metadata.
         
         Args:
-            text: Processed text to chunk
-            metadata: Metadata about the data source
+            text: Text to chunk
+            metadata: Optional metadata about the data source
             
         Returns:
             List of chunks with their metadata
         """
+        if metadata is None:
+            metadata = {}
+            
         chunks = []
         
         # Skip empty text
-        if not text.strip():
+        if not text or not text.strip():
+            logger.warning("Empty text provided for chunking")
             return []
         
-        # Split text by paragraphs
-        paragraphs = re.split(r'\n\s*\n', text)
+        # Clean text: normalize whitespace 
+        text = re.sub(r'\s+', ' ', text)
+        text = text.strip()
         
-        current_chunk = ""
-        current_chunk_index = 0
-        total_text = ""
-        
-        for paragraph in paragraphs:
-            # Split paragraph into sentences
-            sentences = re.split(r'(?<=[.!?])\s+', paragraph.strip())
-            paragraph_with_sentences = []
+        if self.split_by_semantic_units:
+            # Split text by paragraphs first
+            paragraphs = re.split(r'\n\s*\n|\r\n\s*\r\n', text)
             
-            for sentence in sentences:
-                if sentence:
-                    paragraph_with_sentences.append(sentence)
+            current_chunk = ""
+            current_chunk_index = 0
+            total_processed = 0
             
-            # Try to add each sentence to the current chunk
-            for sentence in paragraph_with_sentences:
-                potential_addition = current_chunk + ("\n\n" if current_chunk else "") + sentence
+            for paragraph in paragraphs:
+                paragraph = paragraph.strip()
+                if not paragraph:
+                    continue
+                    
+                # Split paragraph into sentences for finer control
+                sentences = re.split(r'(?<=[.!?])\s+', paragraph)
                 
-                # If adding this sentence exceeds the max size and we have at least the minimum content,
-                # save the current chunk and start a new one
-                if (len(current_chunk) >= self.min_chunk_size and 
-                    len(potential_addition) > self.max_chunk_size):
-                    
-                    # Create metadata for this chunk
-                    chunk_metadata = self._get_base_metadata(metadata, current_chunk_index)
-                    
-                    # Add text range information
-                    start_idx = len(total_text)
-                    end_idx = start_idx + len(current_chunk)
-                    chunk_metadata.update({
-                        'text_range_start': start_idx,
-                        "text_range_end": end_idx
-                    })
-                    
-                    # Save the chunk
-                    chunks.append({
-                        'text': current_chunk,
-                        'metadata': chunk_metadata
-                    })
-                    
-                    # Update total text
-                    total_text += current_chunk
-                    
-                    # Start a new chunk with overlap if possible
-                    if self.chunk_overlap > 0 and len(current_chunk) > self.chunk_overlap:
-                        # Find the last sentence boundary within the overlap region
-                        overlap_text = current_chunk[-self.chunk_overlap:]
-                        sentence_boundaries = list(re.finditer(r'(?<=[.!?])\s+', overlap_text))
+                for sentence in sentences:
+                    sentence = sentence.strip()
+                    if not sentence:
+                        continue
                         
-                        if sentence_boundaries:
-                            # Find the last complete sentence in the overlap
-                            last_boundary = sentence_boundaries[-1].end()
-                            current_chunk = overlap_text[last_boundary:]
-                        else:
-                            # If no sentence boundary in overlap, take the whole overlap
-                            current_chunk = overlap_text
-                    else:
-                        current_chunk = ""
+                    # Check if adding this sentence would exceed max size
+                    potential_chunk = current_chunk + (" " if current_chunk else "") + sentence
                     
-                    current_chunk_index += 1
-                
-                # Add the sentence to the current chunk
-                if current_chunk and not current_chunk.endswith("\n\n"):
-                    if sentence != paragraph_with_sentences[0]:
+                    # If we're above min size and adding would exceed max, save the chunk
+                    if (len(current_chunk) >= self.min_chunk_size and 
+                        len(potential_chunk) > self.max_chunk_size):
+                        
+                        # Calculate positions in original text
+                        start_idx = total_processed - len(current_chunk)
+                        end_idx = total_processed
+                        
+                        # Create metadata
+                        chunk_metadata = self._get_chunk_metadata(
+                            metadata, current_chunk_index, start_idx, end_idx
+                        )
+                        
+                        # Add chunk
+                        chunks.append({
+                            'text': current_chunk,
+                            'metadata': chunk_metadata
+                        })
+                        
+                        # Handle overlap for next chunk
+                        if self.chunk_overlap > 0 and len(current_chunk) > self.chunk_overlap:
+                            # Try to find sentence boundary in overlap region
+                            overlap_text = current_chunk[-self.chunk_overlap:]
+                            sentence_boundaries = list(re.finditer(r'(?<=[.!?])\s+', overlap_text))
+                            
+                            if sentence_boundaries:
+                                # Start new chunk from last sentence boundary in overlap
+                                last_boundary = sentence_boundaries[-1].end()
+                                current_chunk = overlap_text[last_boundary:]
+                            else:
+                                # No sentence boundary found, try to find word boundary
+                                word_boundary = list(re.finditer(r'\s+', overlap_text))
+                                if word_boundary:
+                                    # Start from a word boundary to avoid cutting words
+                                    first_boundary = word_boundary[0].end()
+                                    current_chunk = overlap_text[first_boundary:]
+                                else:
+                                    # If no word boundary either, use whole overlap
+                                    current_chunk = overlap_text
+                        else:
+                            current_chunk = ""
+                            
+                        current_chunk_index += 1
+                    
+                    # Add current sentence to chunk
+                    if current_chunk and not sentence.startswith(" "):
                         current_chunk += " "
-                    else:
-                        current_chunk += "\n\n"
-                current_chunk += sentence
+                    current_chunk += sentence
+                
+                # Track position in original text
+                total_processed += len(paragraph) + 2  # +2 for paragraph breaks
+                
+                # Add paragraph break if needed and not at the end
+                if paragraphs.index(paragraph) < len(paragraphs) - 1 and current_chunk:
+                    current_chunk += "\n\n"
+        else:
+            # Simple character-based chunking without respecting semantic units
+            chunks = self._chunk_by_chars(text, metadata)
             
-            # Add paragraph break if not at the end of text
-            if paragraphs.index(paragraph) < len(paragraphs) - 1 and current_chunk:
-                current_chunk += "\n\n"
-        
         # Don't forget the last chunk
         if current_chunk:
-            chunk_metadata = self._get_base_metadata(metadata, current_chunk_index)
+            start_idx = total_processed - len(current_chunk)
+            end_idx = total_processed
             
-            # Add text range information
-            start_idx = len(total_text)
-            end_idx = start_idx + len(current_chunk)
-            chunk_metadata.update({
-                'text_range_start': start_idx,
-                "text_range_end": end_idx
-            })
+            chunk_metadata = self._get_chunk_metadata(
+                metadata, current_chunk_index, start_idx, end_idx
+            )
             
             chunks.append({
                 'text': current_chunk,
                 'metadata': chunk_metadata
             })
+        
+        logger.info(f"Created {len(chunks)} chunks from text of length {len(text)}")
+        return chunks
+    
+    def _chunk_by_chars(self, text: str, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Simple character-based chunking when semantic units aren't needed."""
+        chunks = []
+        
+        start = 0
+        chunk_index = 0
+        
+        while start < len(text):
+            # Determine end position for this chunk
+            end = min(start + self.max_chunk_size, len(text))
+            
+            # If we're not at the end and we're above min size, try to find a good break point
+            if end < len(text) and end - start >= self.min_chunk_size:
+                # Look for a period, question mark, or exclamation point followed by a space
+                match = re.search(r'[.!?]\s+', text[end-100:end])
+                if match:
+                    end = end - 100 + match.end()
+                else:
+                    # If no sentence boundary, look for word boundary (space)
+                    space_pos = text.rfind(' ', end - 50, end)
+                    if space_pos > start:
+                        end = space_pos + 1  # Include the space to ensure we start at word boundary
+            
+            # Extract chunk and add to results
+            chunk_text = text[start:end].strip()
+            
+            chunk_metadata = self._get_chunk_metadata(
+                metadata, chunk_index, start, end
+            )
+            
+            chunks.append({
+                'text': chunk_text,
+                'metadata': chunk_metadata
+            })
+            
+            # Move start position for next chunk, accounting for overlap
+            if self.chunk_overlap < end - start:
+                # Calculate potential new start position with overlap
+                potential_start = end - self.chunk_overlap
+                
+                # Make sure we don't cut in the middle of a word
+                # Find the next word boundary (space) after potential_start
+                next_space = text.find(' ', potential_start)
+                if next_space != -1 and next_space < end:
+                    start = next_space + 1  # Start after the space
+                else:
+                    # If no space found, just use the calculated position
+                    start = potential_start
+            else:
+                start = start + 1
+            chunk_index += 1
         
         return chunks
 

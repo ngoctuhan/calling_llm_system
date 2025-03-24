@@ -5,8 +5,11 @@ from enum import Enum
 from retrieval_engine.knowledge_retrieval.base_rag import BaseRAG
 from retrieval_engine.knowledge_retrieval.vector_rag.vector_rag import VectorRAG
 from retrieval_engine.knowledge_retrieval.vector_rag.reranker import RerankMethod
-from retrieval_engine.knowledge_retrieval.graph_rag.graph_rag import GraphRAGQueryEngine
-from retrieval_engine.knowledge_retrieval.graph_rag.graph_builder import GraphRAGBuilder
+try:
+    from retrieval_engine.knowledge_retrieval.graph_rag.graph_rag import GraphRAGQueryEngine
+    from retrieval_engine.knowledge_retrieval.graph_rag.graph_builder import GraphRAGBuilder
+except ImportError:
+    print("Graph RAG llama-index is not installed. It will be disabled.")
 from retrieval_engine.knowledge_retrieval.graph_rag_v2 import GraphRAG
 from retrieval_engine.knowledge_retrieval.graph_rag_v2.graph_extractor import GraphExtractor
 from retrieval_engine.knowledge_retrieval.graph_rag_v2.neo4j_connection import SimpleNeo4jConnection
@@ -82,6 +85,7 @@ class RetrievalFactory:
                 **kwargs
             )
         elif rag_type == RAGType.GRAPH:
+            
             return RetrievalFactory._create_graph_rag(
                 llm_config=llm_config,
                 embedding_config=embedding_config,
@@ -134,7 +138,7 @@ class RetrievalFactory:
         cache_embeddings = embedding_config.get("cache", True)
         
         # Extract vector store configuration
-        collection_name = retrieval_config.get("collection_name", "example_hf")
+        collection_name = retrieval_config.get("collection_name", "callcenter")
         qdrant_host = retrieval_config.get("qdrant_host", "localhost")
         qdrant_port = retrieval_config.get("qdrant_port", 6333)
         qdrant_grpc_port = retrieval_config.get("qdrant_grpc_port", 6334)

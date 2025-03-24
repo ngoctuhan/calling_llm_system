@@ -188,12 +188,12 @@ class OpenAIEmbeddings(EmbeddingProvider):
                 timeout=self.request_timeout
             )
             
-            return np.array(response.data[0].embedding, dtype=np.float32)
+            return np.array(response.data[0].embedding, dtype=np.float32).tolist()
             
         except Exception as e:
             logger.error(f"Error generating embeddings with OpenAI: {str(e)}")
             # Return zeros as fallback
-            return np.zeros(self.dimension)
+            return np.zeros(self.dimension).tolist()
     
     def embed_documents(self, texts: List[str]) -> np.ndarray:
         """
@@ -242,7 +242,7 @@ class OpenAIEmbeddings(EmbeddingProvider):
                 # Add zero embeddings for this batch as fallback
                 all_embeddings.extend([np.zeros(self.dimension) for _ in range(len(batch_texts))])
         
-        return np.array(all_embeddings, dtype=np.float32)
+        return np.array(all_embeddings, dtype=np.float32).tolist()
     
     @property
     def dimension(self) -> int:

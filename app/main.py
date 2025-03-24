@@ -50,6 +50,11 @@ async def index(request: Request):
     """Serve the chat interface"""
     return templates.TemplateResponse("chat.html", {"request": request})
 
+@app.get("/ingestion")
+async def ingestion_page(request: Request):
+    """Serve the ingestion interface"""
+    return templates.TemplateResponse("ingestion.html", {"request": request})
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""

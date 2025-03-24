@@ -80,7 +80,6 @@ async def get_graph_builder():
                                      batch_size=30)
     
     # Initialize Neo4j connection
-    print(os.environ.get("NEO4J_URI", "neo4j://localhost:7687"))
     neo4j_connection = SimpleNeo4jConnection(
         uri=os.environ.get("NEO4J_URI", "neo4j://localhost:7687"),
         username=os.environ.get("NEO4J_USERNAME", "neo4j"),
@@ -123,7 +122,8 @@ async def process_documents_task(
     chunk_overlap: int = 100
 ):
     try:
-        chunker = TextChunker(min_chunk_size=chunk_size-100, max_chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        chunker = TextChunker(min_chunk_size=chunk_size, max_chunk_size=chunk_size*2, chunk_overlap=chunk_overlap)
+        chunker_for_graph = TextChunker(min_chunk_size=400, max_chunk_size=650, chunk_overlap=chunk_overlap)
         vector_rag = get_vector_rag(collection_name)
         graph_builder = await get_graph_builder()
         
@@ -143,15 +143,16 @@ async def process_documents_task(
                 metadatas=chunk_metadatas,
             )
 
-            graph_documents = [
-                {
-                    "text": chunk['text'],
-                    "document_id": doc_id,
-                    "metadata": chunk['metadata'] 
-                }
-                for chunk in chunks
-            ]
-            await graph_builder.process_documents(graph_documents, concurrency=10)
+            # chunks_graph = chunker_for_graph.chunk(doc, metadata)
+            # graph_documents = [
+            #     {
+            #         "text": chunk['text'],
+            #         "document_id": doc_id,
+            #         "metadata": chunk['metadata'] 
+            #     }
+            #     for chunk in chunks_graph
+            # ]
+            # await graph_builder.process_documents(graph_documents, concurrency=10)
             logger.info(f"Processed document {i+1}/{len(documents)}: {doc_id} into {len(chunks)} chunks")
         
         # Close connections

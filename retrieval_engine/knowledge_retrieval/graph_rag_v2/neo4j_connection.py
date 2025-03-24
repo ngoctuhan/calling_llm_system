@@ -6,7 +6,7 @@ import re
 from neo4j import GraphDatabase, Driver
 from .graph_extractor import KnowledgeTriplet
 import unicodedata
-
+from unidecode import unidecode
 logger = logging.getLogger(__name__)
 
 class SimpleNeo4jConnection:
@@ -150,74 +150,35 @@ class SimpleNeo4jConnection:
                 
                 # Add all triplets
                 for triplet in triplets:
-                    # Xử lý khác nhau dựa vào loại dữ liệu của triplet
+                    # Process differently based on triplet type
+                    subject = None
+                    predicate = None
+                    object_entity = None
+                    description = None
+                    
                     if isinstance(triplet, KnowledgeTriplet):
-                        # Trực tiếp lấy các thuộc tính từ đối tượng KnowledgeTriplet
-                        subject = triplet.subject.capitalize()
-                        predicate = triplet.predicate.capitalize()
-                        object_entity = triplet.object.capitalize()
-                    elif isinstance(triplet, tuple) and len(triplet) == 2:
-                        # Trích xuất từ chuỗi chứa format: "(subject) --[predicate]--> (object)"
-                        subject_str, rest = triplet
-                        predicate_obj = rest.split('-->')
-                        if len(predicate_obj) != 2:
-                            continue
-                            
-                        predicate = predicate_obj[0].strip('--[]')
-                        object_str = predicate_obj[1].strip(' ()')
-                        
-                        # Chuẩn hóa các tên thực thể
-                        subject = subject_str.strip(' ()').capitalize()
-                        predicate = predicate.strip().capitalize()
-                        object_entity = object_str.strip().capitalize()
-                    elif isinstance(triplet, str):
-                        # Add logic here 
-                        pattern = r"\((.*?)\)\s*--\[(.*?)\]-->\s*\((.*?)\)"
-                        match = re.search(pattern, triplet)
-                        if match:
-                            entity1, relation, entity2 = match.groups()
-                            subject = entity1.strip('').capitalize()
-                            predicate = relation.strip().capitalize()
-                            object_entity = entity2.strip('').capitalize()
-                        else:
-                            logger.warning(f"Unsupported triplet format: {triplet}")
-                            continue
+                        # Directly get attributes from KnowledgeTriplet object
+                        subject = triplet.subject
+                        predicate = triplet.predicate
+                        object_entity = triplet.object
+                        description = triplet.description
                     else:
                         logger.warning(f"Unsupported triplet format: {triplet}")
                         continue
                     
-                    # Use sanitized predicate as the relationship type
-                    # Transliterate Vietnamese characters and remove special characters for valid relationship type
-                    def sanitize_rel_type(text):
-                        # Transliterate Unicode characters to ASCII (including Vietnamese)
-                        normalized = unicodedata.normalize('NFKD', text)
-                        # Remove diacritical marks and keep only ASCII chars
-                        ascii_text = ''.join([c for c in normalized if not unicodedata.combining(c) and ord(c) < 128])
-                        # Replace spaces and special chars with underscores
-                        sanitized = re.sub(r'[^A-Za-z0-9_]', '_', ascii_text)
-                        # Ensure it doesn't start with a number (Neo4j requirement)
-                        if sanitized and sanitized[0].isdigit():
-                            sanitized = 'REL_' + sanitized
-                        # Make sure we have a valid relationship name
-                        if not sanitized or sanitized.isspace():
-                            sanitized = 'RELATION'
-                        return sanitized.upper()
-                    
-                    rel_type = sanitize_rel_type(predicate)
-                    
-                    # Tạo triplet trong Neo4j (sử dụng tên thực thể làm ID)
+                    # Create triplet in Neo4j with description
                     query = f"""
-                    // Tạo hoặc lấy entity subject
+                    // Create or get subject entity
                     MERGE (s:Entity {{name: $subject}})
                     
-                    // Tạo hoặc lấy entity object
+                    // Create or get object entity
                     MERGE (o:Entity {{name: $object}})
                     
-                    // Tạo quan hệ giữa subject và object với predicate là loại quan hệ
-                    // Vẫn giữ nguyên tên quan hệ gốc trong thuộc tính name
-                    MERGE (s)-[r:{rel_type} {{name: $predicate}}]->(o)
+                    // Create relationship between subject and object with predicate as relationship type
+                    // Include description in relationship properties
+                    MERGE (s)-[r:{predicate} {{name: $predicate, description: $description}}]->(o)
                     
-                    // Liên kết với document
+                    // Link to document
                     WITH s, o
                     MATCH (d:Document {{id: $document_id}})
                     MERGE (s)-[:FROM_DOCUMENT]->(d)
@@ -229,6 +190,7 @@ class SimpleNeo4jConnection:
                         subject=subject,
                         predicate=predicate,
                         object=object_entity,
+                        description=description,
                         document_id=document_id
                     )
             
@@ -256,7 +218,6 @@ class SimpleNeo4jConnection:
                     logger.warning(f"Skipping invalid embedding for entity: {entity}")
                     skipped_embeddings += 1
                     continue
-                
                 try:
                     session.run(
                         """
@@ -272,6 +233,52 @@ class SimpleNeo4jConnection:
                     skipped_embeddings += 1
                 
         logger.info(f"Added embeddings for {valid_embeddings} entities. Skipped {skipped_embeddings} invalid embeddings.")
+    
+    def add_relationship_embeddings(self, relationship_embeddings: Dict[str, List[float]]):
+        """
+        Add embeddings to relationship properties
+        
+        Args:
+            relationship_embeddings: Dictionary mapping relationship keys to embedding vectors
+                Format of key: "subject|predicate|object"
+        """
+        if not relationship_embeddings:
+            return
+            
+        self.connect()
+        
+        valid_embeddings = 0
+        skipped_embeddings = 0
+        
+        with self._driver.session(database=self.database) as session:
+            for rel_key, embedding in relationship_embeddings.items():
+                # Skip if relationship key is empty or embedding is invalid
+                if not rel_key or not embedding or not isinstance(embedding, list):
+                    logger.warning(f"Skipping invalid embedding for relationship: {rel_key}")
+                    skipped_embeddings += 1
+                    continue
+                
+                # Parse relationship key
+                try:
+                    subject, predicate, object_entity = rel_key.split('|')
+                    # Create Cypher query to find and update the relationship
+                    session.run(
+                        """
+                        MATCH (s:Entity {name: $subject})-[r]->(o:Entity {name: $object})
+                        WHERE r.name = $predicate
+                        SET r.embedding = $embedding
+                        """,
+                        subject=subject,
+                        predicate=predicate,
+                        object=object_entity,
+                        embedding=embedding
+                    )
+                    valid_embeddings += 1
+                except Exception as e:
+                    logger.error(f"Error adding embedding for relationship '{rel_key}': {str(e)}")
+                    skipped_embeddings += 1
+                
+        logger.info(f"Added embeddings for {valid_embeddings} relationships. Skipped {skipped_embeddings} invalid embeddings.")
     
     def execute_query(self, query: str, parameters: Dict[str, Any] = None):
         """
@@ -299,7 +306,7 @@ class SimpleNeo4jConnection:
         limit: int = 100
     ):
         """
-        Thực hiện truy vấn đơn giản vào knowledge graph
+        Perform simple query on knowledge graph
         
         Args:
             subject: Optional subject to filter by
@@ -359,6 +366,7 @@ class SimpleNeo4jConnection:
             r.name AS predicate,
             type(r) AS predicate_type, 
             o.name AS object,
+            r.description AS description,
             d.id AS document_id,
             d.title AS document_title
         LIMIT $limit
@@ -370,6 +378,7 @@ class SimpleNeo4jConnection:
     def run_vector_search(
         self, 
         query_embedding: List[float],
+        node_type: str = "entity",  # Options: "entity" or "relationship"
         limit: int = 10,
         similarity_threshold: float = 0.7
     ):
@@ -378,157 +387,190 @@ class SimpleNeo4jConnection:
         
         Args:
             query_embedding: Embedding vector of the query
+            node_type: Type of nodes to search ("entity" or "relationship")
             limit: Maximum number of results
             similarity_threshold: Similarity threshold
             
         Returns:
-            List of entities and their similarity scores
+            List of entities/relationships and their similarity scores
         """
         self.connect()
         
         # Try using vector index if available
         try:
-            vector_query = """
-            MATCH (e:Entity)
-            WHERE e.embedding IS NOT NULL
-            CALL db.index.vector.queryNodes(
-                'entity_embedding',
-                $k,
-                $query_embedding
-            ) YIELD node, score
-            WHERE score >= $threshold
-            RETURN DISTINCT node.name AS entity, score
-            ORDER BY entity, score DESC
-            """
+            if node_type.lower() == "entity":
+                # Search entities
+                vector_query = """
+                MATCH (e:Entity)
+                WHERE e.embedding IS NOT NULL
+                WITH e, gds.similarity.cosine(e.embedding, $query_embedding) AS score
+                WHERE score >= $threshold
+                RETURN DISTINCT e.name AS name, score, 'entity' AS type
+                ORDER BY score DESC
+                LIMIT $limit
+                """
+            else:
+                # Search relationships
+                vector_query = """
+                MATCH (s:Entity)-[r]->(o:Entity)
+                WHERE r.embedding IS NOT NULL
+                WITH s, r, o, gds.similarity.cosine(r.embedding, $query_embedding) AS score
+                WHERE score >= $threshold
+                RETURN DISTINCT s.name AS subject, r.name AS predicate, o.name AS object, 
+                       score, 'relationship' AS type, r.description AS description
+                ORDER BY score DESC
+                LIMIT $limit
+                """
             
             params = {
-                "k": limit,
                 "query_embedding": query_embedding,
-                "threshold": similarity_threshold
+                "threshold": similarity_threshold,
+                "limit": limit
             }
             
             result = self.execute_query(vector_query, params)
             if result:
                 return result
         except Exception as e:
-            logger.warning(f"Vector index search failed, falling back to FAISS: {e}")
+            logger.warning(f"Vector search failed: {e}")
         
-        # If vector index isn't available or fails, fall back to FAISS calculation
+        # Fall back to FAISS calculation (simplified for your case)
         try:
             import numpy as np
             import faiss
-            logger.info("Using FAISS for vector similarity search")
+            logger.info(f"Using FAISS for {node_type} similarity search")
             
-            # First retrieve all entities with embeddings
-            entities_query = """
-            MATCH (e:Entity)
-            WHERE e.embedding IS NOT NULL
-            RETURN DISTINCT e.name AS entity, e.embedding AS embedding
-            """
-            
-            entities_with_embeddings = self.execute_query(entities_query)
-            
-            if not entities_with_embeddings:
-                logger.warning("No entities with embeddings found")
-                return []
+            if node_type.lower() == "entity":
+                # Retrieve all entities with embeddings
+                query = """
+                MATCH (e:Entity)
+                WHERE e.embedding IS NOT NULL
+                RETURN e.name AS name, e.embedding AS embedding
+                """
+                items = self.execute_query(query)
                 
-            # Extract entity names and embeddings
-            entity_names = []
-            embeddings = []
-            
-            for entity_data in entities_with_embeddings:
-                entity = entity_data.get("entity")
-                embedding = entity_data.get("embedding")
+                if not items:
+                    return []
                 
-                if entity and embedding:
-                    entity_names.append(entity)
-                    embeddings.append(embedding)
-            
-            if not embeddings:
-                logger.warning("No valid embeddings found")
-                return []
+                # Extract names and embeddings
+                names = [item["name"] for item in items]
+                embeddings = [item["embedding"] for item in items]
                 
+            else:
+                # Retrieve all relationships with embeddings
+                query = """
+                MATCH (s:Entity)-[r]->(o:Entity)
+                WHERE r.embedding IS NOT NULL
+                RETURN s.name AS subject, r.name AS predicate, o.name AS object, 
+                       r.embedding AS embedding, r.description AS description
+                """
+                items = self.execute_query(query)
+                
+                if not items:
+                    return []
+                
+                # For relationships, create composite keys
+                names = []
+                embeddings = []
+                for item in items:
+                    names.append({
+                        "subject": item["subject"],
+                        "predicate": item["predicate"],
+                        "object": item["object"],
+                        "description": item.get("description", "")
+                    })
+                    embeddings.append(item["embedding"])
+            
             # Convert to numpy arrays
             embeddings_array = np.array(embeddings).astype('float32')
             query_embedding_array = np.array([query_embedding]).astype('float32')
             
-            # Get embedding dimension from data
+            # Build FAISS index
             d = embeddings_array.shape[1]
+            index = faiss.IndexFlatIP(d)
             
-            # Build a flat (CPU-based) index
-            index = faiss.IndexFlatIP(d)  # Inner product for cosine similarity
-            
-            # Normalize vectors to unit length (for cosine similarity)
+            # Normalize vectors
             faiss.normalize_L2(embeddings_array)
             faiss.normalize_L2(query_embedding_array)
             
-            # Add vectors to the index
+            # Add vectors to index
             index.add(embeddings_array)
             
-            # Search the index
-            search_k = min(limit * 2, len(embeddings))  # Search for more results than needed to apply threshold
+            # Search
+            search_k = min(limit, len(embeddings))
             distances, indices = index.search(query_embedding_array, search_k)
             
-            # Convert inner product distances to cosine similarity scores
-            # (FAISS returns inner product which is equivalent to cosine for normalized vectors)
-            
-            # Create results with entity names and scores
+            # Format results
             results = []
             for i, (distance, idx) in enumerate(zip(distances[0], indices[0])):
-                # FAISS distances are inner products for normalized vectors: they range from -1 to 1
-                # For cosine similarity, we want 1 for most similar, so we use the distance directly
                 score = float(distance)
                 
-                if score >= similarity_threshold and idx < len(entity_names):
-                    results.append({
-                        "entity": entity_names[idx],
-                        "score": score
-                    })
+                if score >= similarity_threshold and idx < len(names):
+                    if node_type.lower() == "entity":
+                        results.append({
+                            "name": names[idx],
+                            "score": score,
+                            "type": "entity"
+                        })
+                    else:
+                        rel_info = names[idx]
+                        results.append({
+                            "subject": rel_info["subject"],
+                            "predicate": rel_info["predicate"],
+                            "object": rel_info["object"],
+                            "description": rel_info["description"],
+                            "score": score,
+                            "type": "relationship"
+                        })
                     
-                    # Break early if we have enough results
                     if len(results) >= limit:
                         break
-            
-            # Sort results by entity name, then by score
-            results = sorted(results, key=lambda x: (x["entity"], -x["score"]))
             
             return results
             
         except ImportError:
-            logger.warning("FAISS not installed, falling back to basic numpy calculation")
-            # Fall back to NumPy calculation if FAISS is not available
+            logger.warning("FAISS not installed, using basic similarity calculation")
+            # Implement basic similarity calculation if needed
+            return []
+    
+    def query_entity_relationships(self, entity_names: List[str], relationship_names: List[str], limit: int = 20):
+        """
+        Query relationships based on specified entities and relationships
+        
+        Args:
+            entity_names: List of entity names to filter by
+            relationship_names: List of relationship names to filter by
+            limit: Maximum number of results
             
-            # First retrieve all entities with embeddings
-            entities_query = """
-            MATCH (e:Entity)
-            WHERE e.embedding IS NOT NULL
-            RETURN DISTINCT e.name AS entity, e.embedding AS embedding
-            """
-            
-            entities_with_embeddings = self.execute_query(entities_query)
-            
-            # Calculate cosine similarity in Python
-            from numpy import dot
-            from numpy.linalg import norm
-            
-            def cosine_similarity(v1, v2):
-                """Calculate cosine similarity between two vectors"""
-                if not v1 or not v2:
-                    return 0
-                return dot(v1, v2) / (norm(v1) * norm(v2))
-            
-            # Calculate similarity for each entity
-            results = []
-            for entity_data in entities_with_embeddings:
-                entity = entity_data.get("entity")
-                embedding = entity_data.get("embedding")
-                
-                if entity and embedding:
-                    score = cosine_similarity(query_embedding, embedding)
-                    if score >= similarity_threshold:
-                        results.append({"entity": entity, "score": score})
-            
-            # Sort by entity name, then by score
-            results = sorted(results, key=lambda x: (x["entity"], -x["score"]))[:limit]
-            
-            return results 
+        Returns:
+            List of matching relationships
+        """
+        self.connect()
+        
+        query = """
+        MATCH (s:Entity)-[r]->(o:Entity)
+        WHERE 
+            (s.name IN $entity_names OR o.name IN $entity_names) 
+            AND r.name IN $relationship_names
+            AND type(r) <> 'FROM_DOCUMENT'
+        RETURN DISTINCT
+            s.name AS subject,
+            r.name AS predicate,
+            type(r) AS predicate_type,
+            o.name AS object,
+            r.description AS description,
+            CASE 
+                WHEN s.name IN $entity_names AND o.name IN $entity_names THEN 3.0
+                ELSE 2.0
+            END AS relevance_score
+        ORDER BY relevance_score DESC
+        LIMIT $limit
+        """
+        
+        params = {
+            "entity_names": entity_names,
+            "relationship_names": relationship_names,
+            "limit": limit
+        }
+        
+        return self.execute_query(query, params) 

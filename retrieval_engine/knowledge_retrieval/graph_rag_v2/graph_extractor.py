@@ -1,6 +1,7 @@
 import json
 import uuid
 import re
+import unidecode
 import logging
 import asyncio
 from typing import List, Dict, Any, Optional, Tuple, Union
@@ -10,48 +11,42 @@ from .embeddings import EmbeddingProvider
 # Set up logging
 logger = logging.getLogger(__name__)
 
-# Define the knowledge extraction prompt template as a constant
-DEFAULT_KG_TRIPLET_EXTRACT_TMPL = (
-    "Some text is provided below. Given the text, extract up to "
-    "{max_knowledge_triplets} "
-    "knowledge triplets in the form of (subject, predicate, object). "
-    "Ensure completeness and avoid omissions. Exclude stopwords.\n"
-    "\n"
-    "### Instructions:\n"
-    "- Identify all possible knowledge triplets without omission.\n"
-    "- Subjects and objects should be meaningful entities (e.g., people, places, organizations, concepts).\n"
-    "- Predicates should express a clear relationship (e.g., 'is a', 'founded in', 'works at').\n"
-    "- Extract temporal and spatial relationships if applicable.\n"
-    "- Maintain contextual integrity when forming triplets.\n"
-    "- Exclude stopwords and unnecessary words.\n"
-    "\n"
-    "---------------------\n"
-    "### Example:\n"
-    "Text: Alice is Bob's mother.\n"
-    "Triplets:\n"
-    "(Alice, is mother of, Bob)\n"
-    "\n"
-    "Text: Tesla was founded by Elon Musk in 2003 in the United States.\n"
-    "Triplets:\n"
-    "(Tesla, was founded by, Elon Musk)\n"
-    "(Tesla, was founded in, 2003)\n"
-    "(Tesla, was founded in, United States)\n"
-    "\n"
-    "Text: The Eiffel Tower is located in Paris and was completed in 1889.\n"
-    "Triplets:\n"
-    "(Eiffel Tower, is located in, Paris)\n"
-    "(Eiffel Tower, was completed in, 1889)\n"
-    "\n"
-    "Text: Apple Inc. acquired Beats Electronics for $3 billion in 2014.\n"
-    "Triplets:\n"
-    "(Apple Inc., acquired, Beats Electronics)\n"
-    "(Apple Inc., acquired for, $3 billion)\n"
-    "(Apple Inc., acquired in, 2014)\n"
-    "\n"
-    "---------------------\n"
-    "Text: {text}\n"
-    "Triplets:\n"
-)
+DEFAULT_KG_TRIPLET_EXTRACT_TMPL ="""
+Extract up to {max_knowledge_triplets} knowledge triplets from the provided text in the format: (subject, predicate, object, description).
+
+Instructions:
+- Extract ALL meaningful triplets (up to max_triplets limit)
+- Subject/Object should be specific entities or concepts (people, places, organizations, ideas)
+- Predicates should clearly express relationships between subject and object
+- Include temporal, spatial, and causal relationships
+- Maintain original context and meaning from the source text
+- Avoid including stopwords in subject/predicate/object components
+- The description should be a natural language sentence that explains the triplet relationship using language from the source text
+
+Examples:
+
+Input text: "OpenAI was founded in San Francisco in 2015 by Sam Altman and Elon Musk among others. The company focuses on ensuring artificial general intelligence benefits humanity."
+
+Output triplets:
+(OpenAI, founded_in, San Francisco, OpenAI was established in the city of San Francisco.)
+(OpenAI, founded_in, 2015, OpenAI was created in the year 2015.)
+(Sam Altman, co-founded, OpenAI, Sam Altman was one of the founding members of OpenAI.)
+(Elon Musk, co-founded, OpenAI, Elon Musk was among the original founders of OpenAI.)
+(OpenAI, focuses_on, AGI_benefits, OpenAI aims to ensure that artificial general intelligence benefits humanity.)
+
+Input text: "The Great Barrier Reef, located off Australia's northeastern coast, is the world's largest coral reef system. It faces threats from climate change, including rising sea temperatures and ocean acidification."
+
+Output triplets:
+(Great Barrier Reef, located_off, Australia's northeastern coast, The Great Barrier Reef is situated along the northeastern coastline of Australia.)
+(Great Barrier Reef, is, largest coral reef system, The Great Barrier Reef represents the world's largest coral reef ecosystem.)
+(climate change, threatens, Great Barrier Reef, Climate change poses a significant threat to the Great Barrier Reef.)
+(rising sea temperatures, threatens, Great Barrier Reef, Increasing ocean temperatures endanger the Great Barrier Reef ecosystem.)
+(ocean acidification, threatens, Great Barrier Reef, The process of ocean acidification presents a danger to the Great Barrier Reef.)
+
+Text: {text}
+Triplets:
+"""
+
 
 class KnowledgeTriplet:
     """Knowledge triplet extracted from text"""
@@ -61,6 +56,7 @@ class KnowledgeTriplet:
         subject: str,
         predicate: str,
         object: str,
+        description: str
     ):
         """
         Initialize a knowledge triplet
@@ -74,9 +70,11 @@ class KnowledgeTriplet:
         self.subject = subject
         self.predicate = predicate
         self.object = object
+        self.description = description
+
         
     def __repr__(self):
-        return f"({self.subject}) --[{self.predicate}]--> ({self.object})"
+        return f"({self.subject}) --[{self.predicate}]--> ({self.object}): {self.description}"
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert triplet to dictionary"""
@@ -84,6 +82,7 @@ class KnowledgeTriplet:
             "subject": self.subject,
             "predicate": self.predicate,
             "object": self.object,
+            "description": self.description
         }
 
 class GraphExtractor:
@@ -92,10 +91,10 @@ class GraphExtractor:
     def __init__(
         self,
         llm: LLMProvider,
-        max_knowledge_triplets: int = 20,
+        max_knowledge_triplets: int = 30,
         prompt_template: Optional[str] = None,
-        batch_size: int = 5,
-        max_concurrency: int = 10,
+        batch_size: int = 16,
+        max_concurrency: int = 16,
         embedding_provider: EmbeddingProvider = None,
     ):
         """
@@ -144,7 +143,7 @@ class GraphExtractor:
             triplet_part = text[text.index("(") + 1 : text.index(")")]
             tokens = triplet_part.split(",")
             
-            if len(tokens) != 3:
+            if len(tokens) != 4:
                 continue
 
             if any(len(s.encode("utf-8")) > max_length for s in tokens):
@@ -155,18 +154,18 @@ class GraphExtractor:
                 # we'll need NLP models to better extract triplets.
                 continue
 
-            subj, pred, obj = map(str.strip, tokens)
+            subj, pred, obj, description = map(str.strip, tokens)
             if not subj or not pred or not obj:
                 # skip partial triplets
                 continue
 
             # Strip double quotes and Capitalize triplets for disambiguation
-            subj, pred, obj = (
-                entity.strip('"').capitalize() for entity in [subj, pred, obj]
+            subj, pred, obj, description = (
+                entity.strip('"').capitalize() for entity in [subj, pred, obj, description]
             )
 
             # Default confidence is 1.0
-            results.append((subj, pred, obj, 1.0))
+            results.append((subj, pred, obj, description, 1.0))
             
         return results
     
@@ -234,15 +233,16 @@ class GraphExtractor:
             
             # Convert to KnowledgeTriplet objects with metadata
             triplets = []
-            for subj, pred, obj, conf in parsed_triplets:
+            for subj, pred, obj, description,  conf in parsed_triplets:
                 # Create new metadata dict with confidence and original metadata
                 triplet_metadata = {"confidence": conf}
                 triplet_metadata.update(metadata)
                 
                 triplet = KnowledgeTriplet(
-                    subject=subj,
-                    predicate=pred,
-                    object=obj,
+                    subject=subj.capitalize(),
+                    predicate=unidecode(pred).lower().replace(" ", "_"),
+                    object=obj.capitalize(),
+                    description=description
                 )
                 triplets.append(triplet)
             
@@ -255,7 +255,7 @@ class GraphExtractor:
     
     async def extract_embeddings_entities(
         self,
-        triplets: Any|List[KnowledgeTriplet],
+        triplets: List[KnowledgeTriplet],
     ) -> List[Dict[str, Any]]:
         """Extract embeddings for entities from text"""
         if isinstance(triplets, KnowledgeTriplet):
@@ -265,13 +265,14 @@ class GraphExtractor:
                 entities.append(triplet.subject)
                 entities.append(triplet.object)
         elif isinstance(triplets, list):
-            entities = self._extract_entities_from_text_triplets(triplets)
+            entities = [triplet.subject for triplet in triplets]
+            entities.extend([triplet.object for triplet in triplets])
         else:
             raise ValueError("triplets must be a KnowledgeTriplet or a list of KnowledgeTriplet")
         
         # Remove duplicates
         entities = list(set(entities))
-        print(entities)
+
         # Extract embeddings for entities
         embeddings = self.embedding_provider.embed_documents(entities)
 
@@ -279,6 +280,51 @@ class GraphExtractor:
         entity_embeddings = {entity: embedding for entity, embedding in zip(entities, embeddings)}
 
         return entity_embeddings
+    
+    async def extract_relationship_embeddings(
+        self,
+        triplets: List[KnowledgeTriplet],
+    ) -> Dict[str, List[float]]:
+        """
+        Extract embeddings for relationships from triplets
+        
+        Args:
+            triplets: List of KnowledgeTriplet objects
+            
+        Returns:
+            Dictionary mapping relationship keys to embedding vectors
+                Format of key: "subject|predicate|object"
+        """
+        if not self.embedding_provider:
+            raise ValueError("Embedding provider is required to extract relationship embeddings")
+            
+        if isinstance(triplets, KnowledgeTriplet):
+            triplets = [triplets]
+            
+        # Create relationship texts to embed
+        relationship_texts = []
+        relationship_keys = []
+        
+        for triplet in triplets:
+            # Format the relationship text to capture semantics
+            rel_text = f"{triplet.subject} {triplet.predicate} {triplet.object}"
+            if triplet.description:
+                rel_text = triplet.description
+            else:
+                rel_text = f"{triplet.subject} {triplet.predicate} {triplet.object}"
+                
+            relationship_texts.append(rel_text)
+            # Create a unique key for this relationship
+            rel_key = f"{triplet.subject}|{triplet.predicate}|{triplet.object}"
+            relationship_keys.append(rel_key)
+            
+        # Generate embeddings
+        embeddings = self.embedding_provider.embed_documents(relationship_texts)
+        
+        # Create a dictionary of relationship embeddings
+        relationship_embeddings = {key: embedding for key, embedding in zip(relationship_keys, embeddings)}
+        
+        return relationship_embeddings
         
     async def _extract_from_text_batch(
         self,
@@ -345,22 +391,6 @@ class GraphExtractor:
         
         return all_results
     
-    def _extract_entities_from_text_triplets(
-        self,
-        triplets: List[str]
-    ) -> List[str]:
-        """Extract entities from triplets"""
-        # "(Nguyễn trãi) --[Chữ hán]--> (阮廌)"
-        entities = []
-        for triplet in triplets:
-            pattern = r"\((.*?)\)\s*--\[(.*?)\]-->\s*\((.*?)\)"
-            match = re.search(pattern, triplet)
-            if match:
-                entities.append(match.group(1))
-                entities.append(match.group(3))
-        return entities
-
-
     def get_sample_mock_data(self):
         """Get sample mock data for testing"""
         return [

@@ -24,8 +24,8 @@ class GraphBuilder:
         graph_store: SimpleNeo4jConnection,
         graph_extractor: GraphExtractor,
         embedding_provider: EmbeddingProvider,
-        max_workers: int = 4,
-        batch_size: int = 10,
+        max_workers: int = 10,
+        batch_size: int = 16,
        
     ):
         self._neo4j = graph_store 
