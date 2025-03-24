@@ -1,63 +1,63 @@
 # Graph RAG v2
 
-Graph RAG v2 là một framework Retrieval Augmented Generation (RAG) dựa trên đồ thị tri thức, được thiết kế để kết hợp các khả năng tìm kiếm ngữ nghĩa của các mô hình embedding với sức mạnh biểu diễn mối quan hệ của đồ thị tri thức (knowledge graph).
+Graph RAG v2 is a Retrieval Augmented Generation (RAG) framework based on knowledge graphs, designed to combine the semantic search capabilities of embedding models with the relationship representation power of knowledge graphs.
 
-## Cấu trúc Module
+## Module Structure
 
-Module được tổ chức thành các thành phần chính sau:
+The module is organized into the following main components:
 
-1. **GraphRAG**: Lớp chính cho phép truy vấn và tìm kiếm thông tin dựa trên đồ thị, thừa kế từ BaseRAG.
-2. **GraphBuilder**: Lớp xử lý việc xây dựng đồ thị tri thức từ các tài liệu.
-3. **SimpleNeo4jConnection**: Lớp xử lý kết nối và truy vấn cơ sở dữ liệu Neo4j.
-4. **GraphExtractor**: Lớp trích xuất thông tin từ văn bản thành các bộ ba tri thức (knowledge triplets).
+1. **GraphRAG**: The main class that allows querying and searching for information based on graphs, inheriting from BaseRAG.
+2. **GraphBuilder**: Class that handles building knowledge graphs from documents.
+3. **SimpleNeo4jConnection**: Class that handles connections and queries to the Neo4j database.
+4. **GraphExtractor**: Class that extracts information from text into knowledge triplets.
 
-## Chức năng
+## Functionality
 
 ### 1. GraphRAG
 
-Tập trung vào việc truy xuất thông tin từ đồ thị tri thức:
+Focuses on retrieving information from knowledge graphs:
 
-- Kế thừa từ BaseRAG để tương thích với các phương thức RAG tiêu chuẩn
-- Hỗ trợ tìm kiếm ngữ nghĩa dựa trên vector embedding
-- Hỗ trợ tìm kiếm dựa trên cấu trúc đồ thị
-- Kết hợp kết quả từ cả hai phương pháp để cung cấp kết quả phong phú hơn
+- Inherits from BaseRAG for compatibility with standard RAG methods
+- Supports semantic search based on vector embeddings
+- Supports searching based on graph structure
+- Combines results from both methods to provide richer results
 
 ### 2. GraphBuilder
 
-Tập trung vào việc xây dựng và duy trì đồ thị tri thức:
+Focuses on building and maintaining knowledge graphs:
 
-- Xử lý tài liệu để trích xuất bộ ba tri thức
-- Tạo embedding cho các thực thể
-- Lưu trữ thông tin vào cơ sở dữ liệu Neo4j
-- Hỗ trợ xử lý nhiều tài liệu đồng thời
+- Processes documents to extract knowledge triplets
+- Creates embeddings for entities
+- Stores information in Neo4j database
+- Supports processing multiple documents simultaneously
 
-**Lưu ý**: GraphBuilder không xử lý việc chia nhỏ tài liệu (chunking), mà xử lý trực tiếp văn bản đầu vào. Nếu cần chia nhỏ văn bản dài, hãy làm điều đó trước khi truyền vào GraphBuilder hoặc sử dụng module chunking riêng biệt.
+**Note**: GraphBuilder does not handle document chunking but processes input text directly. If you need to split long texts, do so before passing them to GraphBuilder or use a separate chunking module.
 
 ### 3. SimpleNeo4jConnection
 
-Quản lý kết nối và truy vấn đến Neo4j:
+Manages connections and queries to Neo4j:
 
-- Thiết lập và duy trì kết nối đến cơ sở dữ liệu Neo4j
-- Thực hiện các truy vấn cơ bản và phức tạp
-- Quản lý vector embedding của các thực thể
-- Xử lý việc lưu trữ bộ ba tri thức
+- Establishes and maintains connections to Neo4j database
+- Performs basic and complex queries
+- Manages vector embeddings of entities
+- Handles storage of knowledge triplets
 
 ### 4. GraphExtractor
 
-Trích xuất thông tin từ văn bản:
+Extracts information from text:
 
-- Sử dụng LLM để trích xuất các bộ ba tri thức từ văn bản
-- Chuyển đổi đầu ra của LLM thành các đối tượng KnowledgeTriplet
-- Hỗ trợ xử lý hàng loạt các văn bản
+- Uses LLM to extract knowledge triplets from text
+- Converts LLM output into KnowledgeTriplet objects
+- Supports batch processing of texts
 
-## Ví dụ sử dụng
+## Usage Examples
 
-### Tạo đồ thị tri thức
+### Creating a Knowledge Graph
 
 ```python
 from retrieval_engine.knowledge_retrieval.graph_rag_v2 import GraphBuilder
 
-# Khởi tạo GraphBuilder
+# Initialize GraphBuilder
 builder = GraphBuilder(
     neo4j_uri="neo4j://localhost:7687",
     neo4j_username="neo4j",
@@ -65,7 +65,7 @@ builder = GraphBuilder(
     graph_extractor_model="gpt-4o"
 )
 
-# Xử lý tài liệu
+# Process document
 async def process():
     await builder.initialize()
     result = await builder.process_document(
@@ -76,44 +76,44 @@ async def process():
     print(f"Processed document: {result}")
     await builder.close()
 
-# Chạy xử lý
+# Run processing
 import asyncio
 asyncio.run(process())
 ```
 
-### Truy vấn đồ thị tri thức
+### Querying the Knowledge Graph
 
 ```python
 from retrieval_engine.knowledge_retrieval.graph_rag_v2 import GraphRAG
 
-# Khởi tạo GraphRAG
+# Initialize GraphRAG
 rag = GraphRAG(
     neo4j_uri="neo4j://localhost:7687",
     neo4j_username="neo4j",
     neo4j_password="password"
 )
 
-# Truy vấn đồ thị
+# Query the graph
 results = rag.retrieve(
     query="What did Einstein develop?",
     top_k=5,
     use_semantic=True
 )
 
-# Hiển thị kết quả
+# Display results
 for result in results:
     print(f"- {result['text']}")
 ```
 
-## Xử lý tài liệu dài
+## Processing Long Documents
 
-Đối với tài liệu dài, bạn có thể sử dụng module chunking riêng biệt hoặc xử lý trước khi truyền vào GraphBuilder:
+For long documents, you can use a separate chunking module or preprocess before passing to GraphBuilder:
 
 ```python
 from retrieval_engine.knowledge_retrieval.graph_rag_v2 import GraphBuilder
-from text_processing import TextChunker  # Module chia nhỏ văn bản riêng biệt
+from text_processing import TextChunker  # Separate text chunking module
 
-# Khởi tạo
+# Initialize
 builder = GraphBuilder(
     neo4j_uri="neo4j://localhost:7687",
     neo4j_username="neo4j",
@@ -121,11 +121,11 @@ builder = GraphBuilder(
 )
 
 async def process_long_document(text, document_id, metadata=None):
-    # Chia nhỏ văn bản thành các chunk
+    # Split text into chunks
     chunker = TextChunker(chunk_size=1000, chunk_overlap=100)
     chunks = chunker.split_text(text)
     
-    # Xử lý từng chunk
+    # Process each chunk
     results = []
     for i, chunk in enumerate(chunks):
         chunk_id = f"{document_id}_chunk_{i}"
@@ -133,7 +133,7 @@ async def process_long_document(text, document_id, metadata=None):
         chunk_metadata["chunk_id"] = chunk_id
         chunk_metadata["chunk_index"] = i
         
-        # Xử lý chunk bằng GraphBuilder
+        # Process chunk with GraphBuilder
         result = await builder.process_document(
             text=chunk,
             document_id=chunk_id,
@@ -144,16 +144,16 @@ async def process_long_document(text, document_id, metadata=None):
     return results
 ```
 
-## Tài liệu API
+## API Documentation
 
-Xem mô tả phương thức chi tiết trong docstrings của từng lớp.
+See detailed method descriptions in the docstrings of each class.
 
-## Yêu cầu
+## Requirements
 
 - Python 3.7+
-- Neo4j database (có thể sử dụng Neo4j Desktop hoặc Neo4j Aura Cloud)
-- Các thư viện Python: neo4j, openai (hoặc thư viện embedding khác được hỗ trợ)
+- Neo4j database (can use Neo4j Desktop or Neo4j Aura Cloud)
+- Python libraries: neo4j, openai (or other supported embedding library)
 
-## Lưu ý cài đặt
+## Installation Notes
 
-Để sử dụng vector search trong Neo4j, bạn cần sử dụng Neo4j 5.0+ đối với các kịch bản xử lý tiếng Việt.
+To use vector search in Neo4j, you need to use Neo4j 5.0+ for Vietnamese language processing scenarios.
