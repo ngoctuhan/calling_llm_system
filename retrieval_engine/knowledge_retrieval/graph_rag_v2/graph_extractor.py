@@ -13,7 +13,7 @@ from .embeddings import EmbeddingProvider
 logger = logging.getLogger(__name__)
 
 DEFAULT_KG_TRIPLET_EXTRACT_TMPL ="""
-Extract up to {max_knowledge_triplets} knowledge triplets from the provided text in the format: (subject, predicate, object, description).
+Extract entire knowledge triplets from the provided text in the format: (subject, predicate, object, description).
 
 Instructions:
 - Extract ALL meaningful triplets (up to max_triplets limit)
@@ -92,7 +92,7 @@ class GraphExtractor:
     def __init__(
         self,
         llm: LLMProvider,
-        max_knowledge_triplets: int = 30,
+        max_knowledge_triplets: int = 100,
         prompt_template: Optional[str] = None,
         batch_size: int = 16,
         max_concurrency: int = 16,
@@ -222,7 +222,7 @@ class GraphExtractor:
         try:
             # Format the prompt
             prompt = self.prompt_template.format(
-                max_knowledge_triplets=self.max_knowledge_triplets,
+                # max_knowledge_triplets=self.max_knowledge_triplets,
                 text=text
             )
             

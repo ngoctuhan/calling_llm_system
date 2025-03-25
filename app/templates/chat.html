@@ -7,45 +7,106 @@
     <link rel="stylesheet" href="{{ url_for('static', path='/css/chat.css') }}">
 </head>
 <body>
-    <header>
-        <div class="container">
-            <h1>Call Center Information System</h1>
-            <p>Ask questions about our products, services, and database</p>
-        </div>
-    </header>
-    
     <div class="container">
+        <header>
+            <div class="badge">RAG Assistant</div>
+            <h1>Call Center Information System</h1>
+            <p>Ask questions about our products, services, and knowledge base</p>
+        </header>
+        
         <div class="chat-container">
             <div class="chat-window">
                 <div class="chat-header">
-                    Chat
+                    <div class="header-title">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                        </svg>
+                        New Chat
+                    </div>
                 </div>
+                
                 <div id="chat-messages">
+                    <!-- Sample welcome message -->
+                    <div class="message-group bot">
+                        <div class="message-header">
+                            <div class="message-avatar bot">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="12" cy="12" r="10"></circle>
+                                    <path d="M16 16s-1.5-2-4-2-4 2-4 2"></path>
+                                    <line x1="9" y1="9" x2="9.01" y2="9"></line>
+                                    <line x1="15" y1="9" x2="15.01" y2="9"></line>
+                                </svg>
+                            </div>
+                            <div class="message-name">Assistant</div>
+                        </div>
+                        <div class="message bot-message">
+                            <p>Hello! I'm your call center assistant. I can help you with information about our products, services, and database. Ask me anything!</p>
+                        </div>
+                    </div>
                     <!-- Messages will be added here dynamically -->
                 </div>
+                
                 <div class="chat-input">
-                    <form id="chat-form">
-                        <div class="mode-select-container">
-                            <label for="mode-select">Mode:</label>
-                            <select id="mode-select" name="mode">
-                                <option value="knowledgebase">Knowledge Base</option>
-                                <option value="database">Database</option>
-                                <option value="hybrid">Hybrid (Both)</option>
-                            </select>
-                        </div>
-                        <div class="input-group">
-                            <input type="text" id="question-input" name="question" placeholder="Type your question here..." autocomplete="off" required>
-                            <button type="submit" id="submit-button">Send</button>
-                        </div>
-                    </form>
+                    <div class="suggestions">
+                        <div class="suggestion-chip">What products do you offer?</div>
+                        <div class="suggestion-chip">How can I cancel my subscription?</div>
+                        <div class="suggestion-chip">Where is my order?</div>
+                    </div>
+                    
+                    <div class="chat-input-container">
+                        <form id="chat-form">
+                            <div class="mode-select-container">
+                                <label for="mode-select">Search mode:</label>
+                                <select id="mode-select" name="mode">
+                                    <option value="knowledgebase">Knowledge Base</option>
+                                    <option value="database">Database</option>
+                                    <option value="hybrid">Hybrid</option>
+                                </select>
+                            </div>
+                            <div class="input-group">
+                                <textarea id="question-input" name="question" placeholder="Type your question here..." autocomplete="off" required rows="1"></textarea>
+                                <button type="submit" id="submit-button">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
+                                    </svg>
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+                
+                <!-- Thinking indicator that shows when thinking panel is collapsed -->
+                <div class="thinking-indicator" id="thinking-indicator">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <polyline points="12 6 12 12 16 14"></polyline>
+                    </svg>
+                    Thinking...
                 </div>
             </div>
-            <div class="thinking-window">
+            
+            <div class="thinking-window collapsed" id="thinking-window">
+                <button class="thinking-toggle collapsed" id="thinking-toggle">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="15 18 9 12 15 6"></polyline>
+                    </svg>
+                </button>
                 <div class="thinking-header">
-                    Thinking Process
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 3v19M5 8l14 10M5 18L19 8"></path>
+                    </svg>
+                    AI Thinking Process
                 </div>
                 <div id="thinking-steps">
                     <!-- Thinking steps will be added here dynamically -->
+                    <div class="p-8 text-center text-gray-500">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="mx-auto mb-4 text-gray-400">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="12" y1="16" x2="12" y2="12"></line>
+                            <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                        </svg>
+                        <p>Ask a question to see the thinking process</p>
+                    </div>
                 </div>
             </div>
         </div>

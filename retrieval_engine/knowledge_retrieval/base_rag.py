@@ -52,7 +52,7 @@ class BaseRAG(ABC):
         """
         pass
     
-    def process(self, query: str, top_k: int = 5, rerank: bool = True, rerank_top_k: Optional[int] = None, **kwargs) -> Dict[str, Any]:
+    def process(self, query: str, top_k: int = 10, rerank: bool = True, rerank_top_k: Optional[int] = None, **kwargs) -> Dict[str, Any]:
         """
         Process a query through the full RAG pipeline: retrieval + optional reranking.
         

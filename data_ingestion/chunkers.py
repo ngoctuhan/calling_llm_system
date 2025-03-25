@@ -4,11 +4,14 @@ Chunkers that split text into manageable pieces for vector storage.
 import logging
 import json
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable
 import uuid
-
+from dataclasses import dataclass, field
 from .interfaces import DataChunker
+from tiktoken import get_encoding
 
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
@@ -64,14 +67,50 @@ class BaseChunker(DataChunker):
         return chunk_metadata
 
 
-from typing import Dict, Any, List
-import re
-import uuid
-import logging
+@dataclass(frozen=True)
+class TextChunk:
+    """
+    Represents a chunk of text with associated metadata.
+    
+    Attributes:
+        text: The text content of the chunk
+        source_indices: List of source document indices this chunk belongs to
+        token_count: Number of tokens in the chunk (if tokenized)
+        metadata: Additional metadata associated with the chunk
+    """
+    text: str
+    source_indices: List[int] = field(default_factory=list)
+    token_count: int = 0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    @property
+    def chunk_id(self) -> str:
+        """Unique identifier for the chunk."""
+        return self.metadata.get('chunk_id', str(uuid.uuid4()))
+    
+    @property
+    def chunk_index(self) -> int:
+        """Index of the chunk in the sequence."""
+        return self.metadata.get('chunk_index', 0)
+    
+    @property
+    def start_index(self) -> int:
+        """Start index in original text."""
+        return self.metadata.get('text_range_start', 0)
+    
+    @property
+    def end_index(self) -> int:
+        """End index in original text."""
+        return self.metadata.get('text_range_end', 0)
+    
+    def __len__(self) -> int:
+        """Return the length of the text."""
+        return len(self.text)
+    
+    def __str__(self) -> str:
+        """String representation of the chunk."""
+        return f"TextChunk(id={self.chunk_id}, len={len(self.text)}, tokens={self.token_count})"
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 class TextChunker:
     """Advanced text chunker with configurable parameters for optimal text splitting."""
@@ -80,20 +119,26 @@ class TextChunker:
                  min_chunk_size: int = 500, 
                  max_chunk_size: int = 1500, 
                  chunk_overlap: int = 100,
-                 split_by_semantic_units: bool = True):
+                 split_by_semantic_units: bool = True,
+                 length_function: Callable[[str], int] = len,
+                 strip_whitespace: bool = True):
         """
         Initialize the text chunker with customizable parameters.
         
         Args:
-            min_chunk_size: Minimum size of chunks in characters
-            max_chunk_size: Maximum size of chunks in characters
-            chunk_overlap: Number of characters to overlap between chunks
+            min_chunk_size: Minimum size of chunks in characters/tokens
+            max_chunk_size: Maximum size of chunks in characters/tokens
+            chunk_overlap: Number of characters/tokens to overlap between chunks
             split_by_semantic_units: Whether to split by semantic units (paragraphs, sentences)
+            length_function: Function to measure text length (default is character count)
+            strip_whitespace: Whether to strip whitespace from chunk text
         """
         self.min_chunk_size = min_chunk_size
         self.max_chunk_size = max_chunk_size
         self.chunk_overlap = chunk_overlap
         self.split_by_semantic_units = split_by_semantic_units
+        self.length_function = length_function
+        self.strip_whitespace = strip_whitespace
         
     def _get_chunk_metadata(self, metadata: Dict[str, Any], chunk_index: int, 
                            start_idx: int, end_idx: int) -> Dict[str, Any]:
@@ -124,7 +169,7 @@ class TextChunker:
         
         return chunk_metadata
     
-    def chunk(self, text: str, metadata: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+    def chunk(self, text: str, metadata: Dict[str, Any] = None) -> List[TextChunk]:
         """
         Split text into chunks with metadata.
         
@@ -133,7 +178,7 @@ class TextChunker:
             metadata: Optional metadata about the data source
             
         Returns:
-            List of chunks with their metadata
+            List of TextChunk objects
         """
         if metadata is None:
             metadata = {}
@@ -145,9 +190,10 @@ class TextChunker:
             logger.warning("Empty text provided for chunking")
             return []
         
-        # Clean text: normalize whitespace 
-        text = re.sub(r'\s+', ' ', text)
-        text = text.strip()
+        # Clean text: normalize whitespace if needed
+        if self.strip_whitespace:
+            text = re.sub(r'\s+', ' ', text)
+            text = text.strip()
         
         if self.split_by_semantic_units:
             # Split text by paragraphs first
@@ -174,8 +220,8 @@ class TextChunker:
                     potential_chunk = current_chunk + (" " if current_chunk else "") + sentence
                     
                     # If we're above min size and adding would exceed max, save the chunk
-                    if (len(current_chunk) >= self.min_chunk_size and 
-                        len(potential_chunk) > self.max_chunk_size):
+                    if (self.length_function(current_chunk) >= self.min_chunk_size and 
+                        self.length_function(potential_chunk) > self.max_chunk_size):
                         
                         # Calculate positions in original text
                         start_idx = total_processed - len(current_chunk)
@@ -187,10 +233,12 @@ class TextChunker:
                         )
                         
                         # Add chunk
-                        chunks.append({
-                            'text': current_chunk,
-                            'metadata': chunk_metadata
-                        })
+                        chunks.append(TextChunk(
+                            text=current_chunk,
+                            source_indices=[0],  # Default source index
+                            token_count=self.length_function(current_chunk),
+                            metadata=chunk_metadata
+                        ))
                         
                         # Handle overlap for next chunk
                         if self.chunk_overlap > 0 and len(current_chunk) > self.chunk_overlap:
@@ -229,11 +277,11 @@ class TextChunker:
                 if paragraphs.index(paragraph) < len(paragraphs) - 1 and current_chunk:
                     current_chunk += "\n\n"
         else:
-            # Simple character-based chunking without respecting semantic units
-            chunks = self._chunk_by_chars(text, metadata)
+            # Simple character/token-based chunking without respecting semantic units
+            chunks = self._chunk_by_tokens(text, metadata)
             
         # Don't forget the last chunk
-        if current_chunk:
+        if current_chunk and "current_chunk" in locals():
             start_idx = total_processed - len(current_chunk)
             end_idx = total_processed
             
@@ -241,16 +289,18 @@ class TextChunker:
                 metadata, current_chunk_index, start_idx, end_idx
             )
             
-            chunks.append({
-                'text': current_chunk,
-                'metadata': chunk_metadata
-            })
+            chunks.append(TextChunk(
+                text=current_chunk,
+                source_indices=[0],  # Default source index
+                token_count=self.length_function(current_chunk),
+                metadata=chunk_metadata
+            ))
         
-        logger.info(f"Created {len(chunks)} chunks from text of length {len(text)}")
+        logger.info(f"Created {len(chunks)} chunks from text of length {self.length_function(text)}")
         return chunks
     
-    def _chunk_by_chars(self, text: str, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Simple character-based chunking when semantic units aren't needed."""
+    def _chunk_by_tokens(self, text: str, metadata: Dict[str, Any]) -> List[TextChunk]:
+        """Simple token-based chunking when semantic units aren't needed."""
         chunks = []
         
         start = 0
@@ -273,16 +323,18 @@ class TextChunker:
                         end = space_pos + 1  # Include the space to ensure we start at word boundary
             
             # Extract chunk and add to results
-            chunk_text = text[start:end].strip()
+            chunk_text = text[start:end].strip() if self.strip_whitespace else text[start:end]
             
             chunk_metadata = self._get_chunk_metadata(
                 metadata, chunk_index, start, end
             )
             
-            chunks.append({
-                'text': chunk_text,
-                'metadata': chunk_metadata
-            })
+            chunks.append(TextChunk(
+                text=chunk_text,
+                source_indices=[0],  # Default source index
+                token_count=self.length_function(chunk_text),
+                metadata=chunk_metadata
+            ))
             
             # Move start position for next chunk, accounting for overlap
             if self.chunk_overlap < end - start:
@@ -302,185 +354,301 @@ class TextChunker:
             chunk_index += 1
         
         return chunks
-
-
-class TableChunker(BaseChunker):
-    """Chunker for tabular data."""
-    
-    def chunk(self, text: str, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+        
+    def chunk_multiple_texts(self, texts: List[str], metadata: Optional[List[Dict[str, Any]]] = None) -> List[TextChunk]:
         """
-        Split tabular text into chunks.
+        Split multiple texts into chunks with source tracking.
         
         Args:
-            text: Processed table text (likely JSON)
-            metadata: Metadata about the data source
+            texts: List of texts to chunk
+            metadata: Optional list of metadata for each text
             
         Returns:
-            List of chunks with their metadata
+            List of TextChunk objects
         """
+        all_chunks = []
+        
+        if metadata is None:
+            metadata = [{} for _ in texts]
+        elif len(metadata) != len(texts):
+            raise ValueError("Length of metadata list must match length of texts list")
+        
+        for idx, (text, meta) in enumerate(zip(texts, metadata)):
+            # Add source index to metadata
+            meta = meta.copy()
+            meta['source_index'] = idx
+            
+            # Chunk the text
+            chunks = self.chunk(text, meta)
+            
+            # Update source indices
+            for chunk in chunks:
+                chunk.source_indices.append(idx)
+                
+            all_chunks.extend(chunks)
+            
+        return all_chunks
+
+
+@dataclass(frozen=True)
+class Tokenizer:
+    """Tokenizer data class for chunking text by tokens."""
+
+    chunk_overlap: int
+    """Overlap in tokens between chunks"""
+    tokens_per_chunk: int
+    """Maximum number of tokens per chunk"""
+    decode: Callable[[List[int]], str]
+    """ Function to decode a list of token ids to a string"""
+    encode: Callable[[str], List[int]]
+    """ Function to encode a string to a list of token ids"""
+
+
+class TokenTextChunker:
+    """
+    Token-based text chunker that splits text by token count,
+    similar to the example code's TokenTextSplitter.
+    """
+    
+    def __init__(
+        self,
+        tokenizer_fn: Optional[Callable[[str], List[int]]] = None,
+        detokenizer_fn: Optional[Callable[[List[int]], str]] = None,
+        tokens_per_chunk: int = 1000,
+        chunk_overlap: int = 200
+    ):
+        """
+        Initialize the token chunker.
+        
+        Args:
+            tokenizer_fn: Function to convert text into tokens
+            detokenizer_fn: Function to convert tokens back to text
+            tokens_per_chunk: Maximum number of tokens per chunk
+            chunk_overlap: Number of tokens to overlap between chunks
+        """
+        # Default simple tokenizer splits by space if none provided
+        self.tokenizer_fn = tokenizer_fn or (lambda text: text.split())
+        # Default detokenizer joins with spaces if none provided
+        self.detokenizer_fn = detokenizer_fn or (lambda tokens: " ".join(tokens))
+        self.tokens_per_chunk = tokens_per_chunk
+        self.chunk_overlap = chunk_overlap
+        
+        # Create tokenizer data class
+        self.tokenizer = Tokenizer(
+            chunk_overlap=chunk_overlap,
+            tokens_per_chunk=tokens_per_chunk,
+            decode=self.detokenizer_fn if isinstance(self.detokenizer_fn(["test"]), str) else lambda t: self.detokenizer_fn(t),
+            encode=self.tokenizer_fn if isinstance(self.tokenizer_fn("test"), list) else lambda t: self.tokenizer_fn(t)
+        )
+    
+    def chunk(self, text: str, metadata: Dict[str, Any] = None) -> List[TextChunk]:
+        """
+        Split text into chunks based on token count.
+        
+        Args:
+            text: Text to chunk
+            metadata: Optional metadata about the data source
+            
+        Returns:
+            List of TextChunk objects with token count information
+        """
+        if metadata is None:
+            metadata = {}
+            
         chunks = []
         
         # Skip empty text
-        if not text.strip():
+        if not text or not text.strip():
+            logger.warning("Empty text provided for token chunking")
             return []
         
+        # Encode text into tokens
         try:
-            # Try to parse as JSON
-            if text.startswith("CSV Data:") or text.startswith("Excel Data:"):
-                # Extract the JSON part
-                json_text = text.split("\n", 1)[1].strip()
-                data = json.loads(json_text)
-            else:
-                data = json.loads(text)
-            
-            # For CSV data (single table)
-            if isinstance(data, list):
-                # Chunk by groups of rows
-                rows_per_chunk = max(1, self.chunk_size // 200)  # Approximate size
-                
-                for i in range(0, len(data), rows_per_chunk):
-                    chunk_rows = data[i:i+rows_per_chunk]
-                    
-                    # Create chunk metadata
-                    chunk_metadata = self._get_base_metadata(metadata, i // rows_per_chunk)
-                    chunk_metadata.update({
-                        'table_range': {
-                            'start_row': i,
-                            'end_row': min(i + rows_per_chunk - 1, len(data) - 1),
-                            'total_rows': len(data)
-                        }
-                    })
-                    
-                    chunks.append({
-                        'text': json.dumps(chunk_rows, indent=2),
-                        'metadata': chunk_metadata
-                    })
-            
-            # For Excel data (multiple sheets)
-            elif isinstance(data, dict):
-                sheet_index = 0
-                for sheet_name, sheet_data in data.items():
-                    # Parse sheet data
-                    if isinstance(sheet_data, str):
-                        sheet_rows = json.loads(sheet_data)
-                    else:
-                        sheet_rows = sheet_data
-                    
-                    # Skip empty sheets
-                    if not sheet_rows:
-                        continue
-                    
-                    # Chunk by groups of rows
-                    rows_per_chunk = max(1, self.chunk_size // 200)  # Approximate size
-                    
-                    for i in range(0, len(sheet_rows), rows_per_chunk):
-                        chunk_rows = sheet_rows[i:i+rows_per_chunk]
-                        
-                        # Create chunk metadata
-                        chunk_index = (sheet_index * 1000) + (i // rows_per_chunk)
-                        chunk_metadata = self._get_base_metadata(metadata, chunk_index)
-                        chunk_metadata.update({
-                            'sheet_name': sheet_name,
-                            'table_range': {
-                                'start_row': i,
-                                'end_row': min(i + rows_per_chunk - 1, len(sheet_rows) - 1),
-                                'total_rows': len(sheet_rows)
-                            }
-                        })
-                        
-                        chunks.append({
-                            'text': json.dumps(chunk_rows, indent=2),
-                            'metadata': chunk_metadata
-                        })
-                    
-                    sheet_index += 1
-        except json.JSONDecodeError:
-            # Fallback to text chunking
-            logger.warning("Could not parse table data as JSON, falling back to text chunking")
-            text_chunker = TextChunker(self.chunk_size, self.chunk_overlap)
-            return text_chunker.chunk(text, metadata)
+            input_ids = self.tokenizer.encode(text)
         except Exception as e:
-            logger.error(f"Error chunking table data: {str(e)}")
+            logger.error(f"Error encoding text: {e}")
             return []
         
+        # Split into chunks based on token count
+        start_idx = 0
+        chunk_index = 0
+        
+        while start_idx < len(input_ids):
+            # Determine end position for this chunk
+            end_idx = min(start_idx + self.tokenizer.tokens_per_chunk, len(input_ids))
+            
+            # Get token ids for this chunk
+            chunk_ids = input_ids[start_idx:end_idx]
+            
+            # Decode tokens back to text
+            try:
+                chunk_text = self.tokenizer.decode(chunk_ids)
+            except Exception as e:
+                logger.error(f"Error decoding tokens: {e}")
+                chunk_text = ""
+            
+            if chunk_text:
+                # Create metadata for this chunk
+                chunk_metadata = metadata.copy()
+                chunk_metadata.update({
+                    'chunk_id': str(uuid.uuid4()),
+                    'chunk_index': chunk_index,
+                    'token_start': start_idx,
+                    'token_end': end_idx,
+                    'token_count': len(chunk_ids)
+                })
+                
+                # Create TextChunk object
+                chunks.append(TextChunk(
+                    text=chunk_text,
+                    source_indices=[0],  # Default source index
+                    token_count=len(chunk_ids),
+                    metadata=chunk_metadata
+                ))
+            
+            # Move to next chunk, with overlap
+            start_idx += self.tokenizer.tokens_per_chunk - self.tokenizer.chunk_overlap
+            chunk_index += 1
+            
+            # Avoid infinite loops if overlap is too large
+            if self.tokenizer.chunk_overlap >= self.tokenizer.tokens_per_chunk:
+                start_idx += 1
+        
+        logger.info(f"Created {len(chunks)} token-based chunks from text with {len(input_ids)} tokens")
         return chunks
-
-
-class SlideDeckChunker(BaseChunker):
-    """Chunker for presentation slide decks."""
     
-    def chunk(self, text: str, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def chunk_multiple_texts(self, texts: List[str], metadata: Optional[List[Dict[str, Any]]] = None) -> List[TextChunk]:
         """
-        Split presentation text into chunks by slides.
+        Split multiple texts into chunks with source tracking based on token count.
         
         Args:
-            text: Processed presentation text
-            metadata: Metadata about the data source
+            texts: List of texts to chunk
+            metadata: Optional list of metadata for each text
             
         Returns:
-            List of chunks with their metadata
+            List of TextChunk objects
         """
-        chunks = []
+        # Similar implementation to TextChunker.chunk_multiple_texts but using token-based chunking
+        all_chunks = []
         
-        # Skip empty text
-        if not text.strip():
-            return []
+        if metadata is None:
+            metadata = [{} for _ in texts]
+        elif len(metadata) != len(texts):
+            raise ValueError("Length of metadata list must match length of texts list")
         
-        # Check if the text starts with the PowerPoint header
-        if text.startswith("PowerPoint Presentation:"):
-            # Try to split by slides
-            slide_pattern = re.compile(r'Slide (\d+):\n(.*?)(?=Slide \d+:|$)', re.DOTALL)
-            slides = slide_pattern.findall(text)
+        # Process each text
+        for idx, (text, meta) in enumerate(zip(texts, metadata)):
+            # Add source index to metadata
+            meta = meta.copy()
+            meta['source_index'] = idx
             
-            for slide_num, slide_content in slides:
-                # Create chunk metadata
-                chunk_metadata = self._get_base_metadata(metadata, int(slide_num) - 1)
-                chunk_metadata.update({
-                    'slide_number': int(slide_num),
-                    'content_type': 'slide'
-                })
+            # Chunk by tokens
+            chunks = self.chunk(text, meta)
+            
+            # Update source indices
+            for chunk in chunks:
+                chunk.source_indices.append(idx)
                 
-                chunks.append({
-                    'text': slide_content.strip(),
-                    'metadata': chunk_metadata
-                })
-        else:
-            # Try to parse as JSON
-            try:
-                # Look for JSON in the text
-                json_text = text
-                if text.startswith("Presentation Data:"):
-                    json_text = text.split("\n", 1)[1].strip()
-                
-                data = json.loads(json_text)
-                
-                # Extract slides data
-                slides_data = data.get('slides', [])
-                
-                for slide in slides_data:
-                    slide_num = slide.get('slide_number', 0)
-                    slide_content = slide.get('content', '')
-                    
-                    # Create chunk metadata
-                    chunk_metadata = self._get_base_metadata(metadata, slide_num - 1)
-                    chunk_metadata.update({
-                        'slide_number': slide_num,
-                        'content_type': 'slide'
-                    })
-                    
-                    chunks.append({
-                        'text': slide_content,
-                        'metadata': chunk_metadata
-                    })
-            except json.JSONDecodeError:
-                # Fallback to text chunking
-                logger.warning("Could not parse slide data as JSON, falling back to text chunking")
-                text_chunker = TextChunker(self.chunk_size, self.chunk_overlap)
-                return text_chunker.chunk(text, metadata)
-            except Exception as e:
-                logger.error(f"Error chunking slide data: {str(e)}")
-                return []
+            all_chunks.extend(chunks)
+            
+        return all_chunks
+
+
+def chunk_with_tokenizer(text: str, tokenizer: Tokenizer) -> List[str]:
+    """
+    Split a single text into chunks using the provided tokenizer.
+    Similar to split_single_text_on_tokens from the example code.
+    
+    Args:
+        text: Text to chunk
+        tokenizer: Tokenizer to use for encoding/decoding
         
-        return chunks
+    Returns:
+        List of text chunks
+    """
+    result = []
+    
+    # Encode the text into tokens
+    input_ids = tokenizer.encode(text)
+    
+    # Chunk by token count
+    start_idx = 0
+    while start_idx < len(input_ids):
+        # Calculate end index for current chunk
+        cur_idx = min(start_idx + tokenizer.tokens_per_chunk, len(input_ids))
+        
+        # Get tokens for current chunk
+        chunk_ids = input_ids[start_idx:cur_idx]
+        
+        # Decode tokens to text
+        chunk_text = tokenizer.decode(list(chunk_ids))
+        result.append(chunk_text)
+        
+        # Move to next position, considering overlap
+        start_idx += tokenizer.tokens_per_chunk - tokenizer.chunk_overlap
+    
+    return result
+
+
+def chunk_multiple_texts_with_tokenizer(
+    texts: List[str], 
+    tokenizer: Tokenizer
+) -> List[TextChunk]:
+    """
+    Split multiple texts and return chunks with metadata using the tokenizer.
+    Similar to split_multiple_texts_on_tokens from the example code.
+    
+    Args:
+        texts: List of texts to chunk
+        tokenizer: Tokenizer to use for encoding/decoding
+        
+    Returns:
+        List of TextChunk objects with metadata
+    """
+    result = []
+    mapped_ids = []
+
+    # Encode all texts
+    for source_doc_idx, text in enumerate(texts):
+        encoded = tokenizer.encode(text)
+        mapped_ids.append((source_doc_idx, encoded))
+
+    # Flatten all tokens with their source document index
+    input_ids = [
+        (source_doc_idx, token_id) for source_doc_idx, ids in mapped_ids for token_id in ids
+    ]
+
+    # Chunk by token count
+    start_idx = 0
+    while start_idx < len(input_ids):
+        # Calculate end index for current chunk
+        cur_idx = min(start_idx + tokenizer.tokens_per_chunk, len(input_ids))
+        
+        # Get tokens for current chunk
+        chunk_ids = input_ids[start_idx:cur_idx]
+        
+        # Extract token ids and decode to text
+        chunk_text = tokenizer.decode([token_id for _, token_id in chunk_ids])
+        
+        # Track which documents this chunk came from
+        doc_indices = list({doc_idx for doc_idx, _ in chunk_ids})
+        
+        # Create TextChunk object
+        result.append(TextChunk(
+            text=chunk_text,
+            source_indices=doc_indices,
+            token_count=len(chunk_ids),
+            metadata={
+                'chunk_id': str(uuid.uuid4()),
+                'token_start': start_idx,
+                'token_end': cur_idx,
+                'token_count': len(chunk_ids)
+            }
+        ))
+        
+        # Move to next position, considering overlap
+        start_idx += tokenizer.tokens_per_chunk - tokenizer.chunk_overlap
+    
+    return result
 
 

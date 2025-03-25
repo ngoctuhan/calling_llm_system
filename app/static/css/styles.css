@@ -1,0 +1,21 @@
+/* Streaming specific styles */
+.streaming-cursor {
+    display: inline-block;
+    font-weight: bold;
+    animation: blink 0.7s infinite;
+    color: var(--primary-color);
+}
+
+@keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+}
+
+.bot-message.streaming {
+    position: relative;
+}
+
+/* Additional Utilities */
+.hidden {
+    display: none;
+} 

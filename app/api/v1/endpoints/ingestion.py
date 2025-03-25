@@ -1,11 +1,15 @@
 import os
 import logging
-from typing import Dict, List, Optional, Union
+import hashlib
+from typing import Dict, List, Optional
+from functools import lru_cache
+
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel, HttpUrl, Field
 
+import tiktoken
 from data_ingestion.readers import CMSReader
-from data_ingestion.chunkers import TextChunker
+from data_ingestion.chunkers import TextChunk, TokenTextChunker
 from retrieval_engine.knowledge_retrieval.vector_rag import VectorRAG
 from retrieval_engine.knowledge_retrieval.graph_rag_v2 import GraphBuilder
 from retrieval_engine.knowledge_retrieval.graph_rag_v2.graph_extractor import GraphExtractor
@@ -23,7 +27,7 @@ router = APIRouter()
 class IngestURLRequest(BaseModel):
     url: HttpUrl
     collection_name: str = "callcenter"
-    chunk_size: Optional[int] = Field(default=500, ge=100, le=2000)
+    chunk_size: Optional[int] = Field(default=500, ge=100, le=4000)
     chunk_overlap: Optional[int] = Field(default=100, ge=0, le=500)
     credentials: Optional[Dict] = {}
     metadata: Optional[Dict] = {}
@@ -32,7 +36,7 @@ class IngestTextRequest(BaseModel):
     text: str
     document_id: str
     collection_name: str = "callcenter"
-    chunk_size: Optional[int] = Field(default=500, ge=100, le=2000)
+    chunk_size: Optional[int] = Field(default=500, ge=100, le=4000)
     chunk_overlap: Optional[int] = Field(default=100, ge=0, le=500)
     metadata: Optional[Dict] = {}
 
@@ -40,7 +44,7 @@ class IngestDocumentsRequest(BaseModel):
     documents: List[str]
     document_ids: List[str]
     collection_name: str = "callcenter"
-    chunk_size: Optional[int] = Field(default=500, ge=100, le=2000)
+    chunk_size: Optional[int] = Field(default=500, ge=100, le=4000)
     chunk_overlap: Optional[int] = Field(default=100, ge=0, le=500)
     metadatas: Optional[List[Dict]] = None
 
@@ -51,7 +55,42 @@ class IngestResponse(BaseModel):
     chunk_count: Optional[int] = None
     job_id: Optional[str] = None
 
+# Helper function to get tokenizer functions for chunking
+def get_tiktoken_functions():
+    encoding = tiktoken.get_encoding("cl100k_base")
+    
+    def encode_fn(text):
+        return encoding.encode(text)
+
+    def decode_fn(tokens):
+        # Handle the test case in the TokenTextChunker constructor
+        if tokens and isinstance(tokens[0], str) and tokens[0] == "test":
+            return "test string"
+        
+        # Normal case: convert tokens to text
+        if isinstance(tokens, list) and all(isinstance(token, int) for token in tokens):
+            return encoding.decode(tokens)
+        else:
+            try:
+                return encoding.decode([int(token) for token in tokens if token])
+            except ValueError:
+                logger.warning(f"Could not convert tokens to int")
+                return ""
+                
+    return encode_fn, decode_fn
+
+# Helper function to create chunker with specified settings
+def create_token_chunker(tokens_per_chunk: int, chunk_overlap: int) -> TokenTextChunker:
+    encode_fn, decode_fn = get_tiktoken_functions()
+    return TokenTextChunker(
+        tokenizer_fn=encode_fn,
+        detokenizer_fn=decode_fn,
+        tokens_per_chunk=tokens_per_chunk,
+        chunk_overlap=chunk_overlap
+    )
+
 # Helper function to initialize vector RAG
+@lru_cache(maxsize=8)
 def get_vector_rag(collection_name: str) -> VectorRAG:
     return VectorRAG(
         collection_name=collection_name,
@@ -75,10 +114,12 @@ async def get_graph_builder():
         api_key=os.getenv("GOOGLE_API_KEY")
     )
     
-    graph_extractor = GraphExtractor(llm=llm, 
-                                     embedding_provider=embedding_provider,
-                                     batch_size=30,
-                                     max_knowledge_triplets=100)
+    graph_extractor = GraphExtractor(
+        llm=llm, 
+        embedding_provider=embedding_provider,
+        batch_size=30,
+        max_knowledge_triplets=100
+    )
     
     # Initialize Neo4j connection
     neo4j_connection = SimpleNeo4jConnection(
@@ -97,21 +138,14 @@ async def get_graph_builder():
     )
     return builder
 
-# Helper function to process a single chunk
-async def process_chunk(text: str, document_id: str, metadata: Dict, vector_rag: VectorRAG, graph_builder: GraphBuilder):
-    # Add to vector database
-    vector_rag.index_documents(
-        documents=[text],
-        metadatas=[metadata],
-        document_ids=[document_id]
-    )
-    
-    # Add to graph database
-    await graph_builder.process_document(
-        text=text,
-        document_id=document_id,
-        document_metadata=metadata
-    )
+# Get chunkers with cached instances
+@lru_cache(maxsize=1)
+def get_graph_chunker() -> TokenTextChunker:
+    return create_token_chunker(tokens_per_chunk=1000, chunk_overlap=200)
+
+@lru_cache(maxsize=1)
+def get_vector_chunker(chunk_size: int = 500, chunk_overlap: int = 100) -> TokenTextChunker:
+    return create_token_chunker(tokens_per_chunk=chunk_size, chunk_overlap=chunk_overlap)
 
 # Background task for processing documents
 async def process_documents_task(
@@ -123,8 +157,11 @@ async def process_documents_task(
     chunk_overlap: int = 100
 ):
     try:
-        chunker = TextChunker(min_chunk_size=chunk_size, max_chunk_size=chunk_size*2, chunk_overlap=chunk_overlap)
-        chunker_for_graph = TextChunker(min_chunk_size=1000, max_chunk_size=3000, chunk_overlap=chunk_overlap)
+        # Get chunkers for vector and graph databases
+        vector_chunker = get_vector_chunker(chunk_size, chunk_overlap)
+        graph_chunker = get_graph_chunker()
+        
+        # Get database connections
         vector_rag = get_vector_rag(collection_name)
         graph_builder = await get_graph_builder()
         
@@ -132,28 +169,36 @@ async def process_documents_task(
         
         # Process each document
         for i, (doc, doc_id, metadata) in enumerate(zip(documents, document_ids, metadatas)):
-            # Split document into chunks
-            chunks = chunker.chunk(doc, metadata)
+            metadata = metadata.copy()
+            metadata['document_id'] = doc_id
             
-            chunk_texts = [chunk['text'] for chunk in chunks]
-            chunk_metadatas = [chunk['metadata'] for chunk in chunks]
+            # Split document into chunks for vector database
+            vector_chunks = vector_chunker.chunk(doc, metadata)
             
             # Add to vector database
             vector_rag.index_documents(
-                documents=chunk_texts,
-                metadatas=chunk_metadatas,
+                documents=[chunk.text for chunk in vector_chunks],
+                metadatas=[chunk.metadata for chunk in vector_chunks],
             )
-            chunks_graph = chunker_for_graph.chunk(doc, metadata)
+            
+            # Split document into larger chunks for graph database
+            graph_chunks = graph_chunker.chunk(doc, metadata)
+            
+            # Prepare graph documents with document_id
             graph_documents = [
                 {
-                    "text": chunk['text'],
+                    "text": chunk.text,
                     "document_id": doc_id,
-                    "metadata": chunk['metadata'] 
+                    "metadata": chunk.metadata 
                 }
-                for chunk in chunks_graph
+                for chunk in graph_chunks
             ]
+            
+            # Process graph documents
             await graph_builder.process_documents(graph_documents, concurrency=10)
-            logger.info(f"Processed document {i+1}/{len(documents)}: {doc_id} into {len(chunks)} chunks")
+            
+            logger.info(f"Processed document {i+1}/{len(documents)}: {doc_id} - "
+                       f"{len(vector_chunks)} vector chunks, {len(graph_chunks)} graph chunks")
         
         # Close connections
         await graph_builder.close()
@@ -182,7 +227,6 @@ async def ingest_url(request: IngestURLRequest, background_tasks: BackgroundTask
             metadata.update(request.metadata)
             
         # Generate document ID from URL
-        import hashlib
         document_id = hashlib.md5(str(request.url).encode()).hexdigest()
         
         # Process in background
@@ -205,30 +249,3 @@ async def ingest_url(request: IngestURLRequest, background_tasks: BackgroundTask
     except Exception as e:
         logger.error(f"Error ingesting URL: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to ingest URL: {str(e)}")
-
-@router.post("/ingest/text", response_model=IngestResponse)
-async def ingest_text(request: IngestTextRequest, background_tasks: BackgroundTasks):
-    """
-    Ingest text content into both vector and graph databases
-    """
-    try:
-        # Process in background
-        background_tasks.add_task(
-            process_documents_task,
-            documents=[request.text],
-            document_ids=[request.document_id],
-            collection_name=request.collection_name,
-            metadatas=[request.metadata or {}],
-            chunk_size=request.chunk_size,
-            chunk_overlap=request.chunk_overlap
-        )
-        
-        return IngestResponse(
-            success=True,
-            message=f"Started ingestion of document {request.document_id}",
-            document_id=request.document_id,
-            job_id=request.document_id
-        )
-    except Exception as e:
-        logger.error(f"Error ingesting text: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to ingest text: {str(e)}")

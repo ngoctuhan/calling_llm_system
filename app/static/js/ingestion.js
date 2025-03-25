@@ -235,7 +235,7 @@ function handleTestRag() {
     const requestData = {
         query: query,
         collection_name: collectionName,
-        top_k: 5,
+        top_k: 10,
         model_name: model
     };
     

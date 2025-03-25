@@ -23,7 +23,7 @@ router = APIRouter()
 class RetrievalRequest(BaseModel):
     query: str
     collection_name: str = "callcenter"
-    top_k: Optional[int] = Field(default=5, ge=1, le=20)
+    top_k: Optional[int] = Field(default=100, ge=1, le=20)
     model_name: Optional[str] = "gemini-2.0-flash"
 
 class Text2SQLRequest(BaseModel):
