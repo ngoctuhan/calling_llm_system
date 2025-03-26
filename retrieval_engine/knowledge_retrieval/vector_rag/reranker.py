@@ -3,7 +3,7 @@ import logging
 from typing import List, Dict, Any, Optional, Union, Callable
 import numpy as np
 from enum import Enum, auto
-
+from retrieval_engine.knowledge_retrieval.abs_cls import SingletonMeta
 logger = logging.getLogger(__name__)
 
 class RerankMethod(str, Enum):
@@ -21,7 +21,7 @@ class RerankMethod(str, Enum):
         except ValueError:
             return cls.DEFAULT
 
-class DocumentReranker:
+class DocumentReranker(metaclass=SingletonMeta):
     """
     Document reranker for improving RAG retrieval results.
     

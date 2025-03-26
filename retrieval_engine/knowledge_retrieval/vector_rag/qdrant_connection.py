@@ -43,6 +43,38 @@ class VectorStore:
             timeout=5.0
         )
         
+    def get_collection(self, collection_name: str) -> Dict[str, Any]:
+        """
+        Get collection info if it exists.
+        
+        Args:
+            collection_name (str): The name of the collection to check.
+            
+        Returns:
+            Dict[str, Any]: Collection information.
+            
+        Raises:
+            Exception: If the collection does not exist.
+        """
+        logger.info(f"Checking if collection '{collection_name}' exists")
+        return self.client.get_collection(collection_name=collection_name)
+        
+    def collection_exists(self, collection_name: str) -> bool:
+        """
+        Check if a collection exists.
+        
+        Args:
+            collection_name (str): The name of the collection to check.
+            
+        Returns:
+            bool: True if the collection exists, False otherwise.
+        """
+        try:
+            self.get_collection(collection_name)
+            return True
+        except Exception:
+            return False
+        
     def create_collection(self, collection_name: str, vector_size: int, distance: str = "COSINE") -> None:
         """
         Create a new collection in Qdrant with the specified name and vector size.
@@ -64,7 +96,7 @@ class VectorStore:
         distance_metric = distance_map.get(distance, Distance.COSINE)
         
         logger.info(f"Creating collection '{collection_name}' with vector size {vector_size}")
-        self.client.recreate_collection(
+        self.client.create_collection(
             collection_name=collection_name,
             vectors_config=VectorParams(size=vector_size, distance=distance_metric),
         )

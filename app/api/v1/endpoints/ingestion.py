@@ -144,7 +144,7 @@ def get_graph_chunker() -> TokenTextChunker:
     return create_token_chunker(tokens_per_chunk=1000, chunk_overlap=200)
 
 @lru_cache(maxsize=1)
-def get_vector_chunker(chunk_size: int = 500, chunk_overlap: int = 100) -> TokenTextChunker:
+def get_vector_chunker(chunk_size: int = 350, chunk_overlap: int = 100) -> TokenTextChunker:
     return create_token_chunker(tokens_per_chunk=chunk_size, chunk_overlap=chunk_overlap)
 
 # Background task for processing documents

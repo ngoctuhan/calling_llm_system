@@ -10,6 +10,7 @@ from retrieval_engine.knowledge_retrieval.vector_rag.embeddings import (
     EmbeddingProvider, 
     EmbeddingFactory
 )
+from retrieval_engine.knowledge_retrieval.abs_cls import SingletonMeta
 
 logger = logging.getLogger(__name__)
 
@@ -166,8 +167,9 @@ class VectorRAG(BaseRAG):
             # Check if collection exists by trying to retrieve info
             self.vector_store.get_collection(self.collection_name)
             logger.info(f"Using existing collection: {self.collection_name}")
-        except Exception:
+        except Exception as e:
             # Collection doesn't exist, create it
+            logger.info(f"Collection '{self.collection_name}' not found: {str(e)}")
             logger.info(f"Creating new collection: {self.collection_name}")
             self.vector_store.create_collection(
                 collection_name=self.collection_name,
